@@ -1,0 +1,11 @@
+[project]
+name = "autocracy"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "networkx>=3.5",
+    "typer>=0.20.0",
+    "pytest>=8.3.0",
+]

@@ -1,0 +1,6 @@
+gamedata/data
+*.json
+gamedata/saves
+*.xml
+*.lock
+*.pyc
