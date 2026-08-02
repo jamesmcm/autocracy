@@ -1,0 +1,138 @@
+{
+  "cases": [
+    {
+      "action": {
+        "from_level": 0.5,
+        "policy": "BusLanes",
+        "requested_level": 0.64583331,
+        "type": "set_policy"
+      },
+      "country": "uk",
+      "expected": {
+        "finance": {
+          "total_expenditure": 259880.389,
+          "total_income": 227899.374
+        },
+        "political_capital": 45.0,
+        "policies": {
+          "BusLanes": 0.64583331
+        },
+        "policy_runtime": {
+          "active": {
+            "BusLanes": true
+          },
+          "desired_throttles": {
+            "BusLanes": 0.64583331
+          },
+          "effect_throttles": {
+            "BusLanes": 0.645833
+          },
+          "implementations": {
+            "BusLanes": 1.0
+          }
+        },
+        "simvalues": {
+          "AirTravel": 0.33432162,
+          "AlcoholConsumption": 0.66777897,
+          "BusUsage": 0.21909052,
+          "CO2Emissions": 0.44988739,
+          "CarUsage": 0.69930536,
+          "CrimeRate": 1.0,
+          "CurrencyStrength": 0.23279682,
+          "Education": 0.4763481,
+          "EnergyEfficiency": 0.59750324,
+          "Environment": 0.65903574,
+          "Equality": 0.60721666,
+          "ForeignRelations": 0.31602418,
+          "GDP": 0.17120725,
+          "Health": 0.60198885,
+          "Immigration": 0.38521433,
+          "InternationalTrade": 0.49737877,
+          "LegalDrugConsumption": 0.0,
+          "OilDemand": 0.38126388,
+          "OilPrice": 0.44063193,
+          "OilSupply": 0.5,
+          "PovertyRate": 0.53128475,
+          "PrivateHealthcare": 0.16591793,
+          "PrivateHousing": 0.19291219,
+          "PrivatePensions": 0.11985478,
+          "PrivateSchools": 0.31871003,
+          "RacialTension": 0.49587727,
+          "RailUsage": 0.41970104,
+          "Technology": 0.46923229,
+          "TobaccoUse": 0.42060933,
+          "Tourism": 0.0,
+          "TrafficCongestion": 0.69415629,
+          "Unemployment": 0.66456902,
+          "ViolentCrimeRate": 0.23817417,
+          "Wages": 0.34942523,
+          "WorkerProductivity": 0.39241746,
+          "WorkingWeek": 0.74090266,
+          "_HighIncome": -0.20092319,
+          "_LowIncome": -0.19293857,
+          "_MiddleIncome": -0.28893337,
+          "_Terrorism": 0.18859208
+        },
+        "turn": 1
+      },
+      "expected_deltas": {
+        "AirTravel": 0.23083012,
+        "AlcoholConsumption": -0.06863427,
+        "BusUsage": 0.01847893,
+        "CO2Emissions": 0.18386167,
+        "CarUsage": 0.09438235,
+        "CrimeRate": 0.00505167,
+        "CurrencyStrength": 0.23279682,
+        "Education": 0.00151756,
+        "EnergyEfficiency": 0.00112789,
+        "Environment": -0.04045832,
+        "Equality": 0.00011737,
+        "ForeignRelations": -0.0160802,
+        "GDP": -0.06158957,
+        "Health": -0.00740886,
+        "Immigration": 0.04321206,
+        "InternationalTrade": 0.02452875,
+        "LegalDrugConsumption": 0.0,
+        "OilDemand": 0.1298722,
+        "OilPrice": 0.06493611,
+        "OilSupply": 0.0,
+        "PovertyRate": 0.00394172,
+        "PrivateHealthcare": 0.02156368,
+        "PrivateHousing": 0.03005525,
+        "PrivatePensions": 0.02928734,
+        "PrivateSchools": 0.03112835,
+        "RacialTension": 0.00491509,
+        "RailUsage": 0.02497524,
+        "Technology": -0.00035542,
+        "TobaccoUse": -0.02601036,
+        "Tourism": 0.0,
+        "TrafficCongestion": 0.11289257,
+        "Unemployment": -0.16030222,
+        "ViolentCrimeRate": 0.01524639,
+        "Wages": 0.05461425,
+        "WorkerProductivity": -0.02494404,
+        "WorkingWeek": 0.00168609,
+        "_HighIncome": -0.00186764,
+        "_LowIncome": 0.00909915,
+        "_MiddleIncome": 0.00538072,
+        "_Terrorism": 0.01743734
+      },
+      "id": "uk_bus_lanes_live_turn_0_to_1",
+      "initial_save": "gamedata/saves/uk0.xml",
+      "notes": "Captured by launching the installed game under Xvfb, raising Bus Lanes, and saving before and after one turn. The raw saves remain outside this repository; state values are observational because the game has unstored random-system state.",
+      "tolerances": {
+        "budget": 0.01,
+        "policy_level": 0.000001,
+        "state_value": 0.01,
+        "stochastic_fields": [
+          "simvalues",
+          "hidden_values",
+          "voters"
+        ]
+      }
+    }
+  ],
+  "description": "Controlled live-game extraction for a Bus Lanes slider change; complements the deterministic shipped-save no-op case.",
+  "environment": "Democracy 3",
+  "schema_version": 1
+}

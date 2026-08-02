@@ -1,5 +1,7 @@
 gamedata/data
 *.json
+!parity_cases/
+!parity_cases/*.json
 gamedata/saves
 *.xml
 *.lock

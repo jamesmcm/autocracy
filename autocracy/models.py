@@ -27,6 +27,16 @@ class Effect:
 
 
 @dataclass(slots=True)
+class EffectHistory:
+    """Serialized effect memory recovered from a Democracy 3 save."""
+
+    source: str
+    target: str
+    values: List[float] = field(default_factory=list)
+    effect_id: Optional[str] = None
+
+
+@dataclass(slots=True)
 class NodeDefinition:
     """Metadata describing a simulation node (statistic, gauge, voter metric)."""
 
@@ -97,6 +107,13 @@ class CountrySetup:
     options: List[str] = field(default_factory=list)
     stats: Dict[str, str] = field(default_factory=dict)
     overrides: List[dict] = field(default_factory=list)
+    economic_cycle_start: float = 0.0
+    wealth_mod: float = 1.0
+    min_income: float = 0.0
+    max_income: float = 0.0
+    min_gdp: float = 0.0
+    max_gdp: float = 0.0
+    starting_debt: float = 0.0
 
 
 @dataclass(slots=True)
@@ -122,6 +139,7 @@ class SimulationState:
     policies: Dict[str, float]
     political_capital: float
     effects: Dict[str, float]
+    effect_histories: List[EffectHistory] = field(default_factory=list)
     situations: Dict[str, float] = field(default_factory=dict)
     active_situations: List[str] = field(default_factory=list)
     response_factors: Dict[str, float] = field(default_factory=dict)
@@ -129,6 +147,21 @@ class SimulationState:
     policy_incomes: Dict[str, float] = field(default_factory=dict)
     total_expenditure: float = 0.0
     total_income: float = 0.0
+    global_economy_position: float = 0.0
+    voter_values: Dict[str, float] = field(default_factory=dict)
+    voter_percentages: Dict[str, float] = field(default_factory=dict)
+    voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    policy_implementations: Dict[str, float] = field(default_factory=dict)
+    policy_active: Dict[str, bool] = field(default_factory=dict)
+    policy_cost_multipliers: Dict[str, float] = field(default_factory=dict)
+    policy_income_multipliers: Dict[str, float] = field(default_factory=dict)
+    policy_cost_scalars: Dict[str, float] = field(default_factory=dict)
+    policy_income_scalars: Dict[str, float] = field(default_factory=dict)
+    effect_throttles: Dict[str, float] = field(default_factory=dict)
+    policy_desired_throttles: Dict[str, float] = field(default_factory=dict)
+    ministerial_effectiveness: Dict[str, float] = field(default_factory=dict)
+    ministerial_competence: Dict[str, float] = field(default_factory=dict)
+    political_capital_income: float = 0.0
 
 
 @dataclass(slots=True)
@@ -164,5 +197,7 @@ class SituationDefinition:
     start_trigger: float
     stop_trigger: float
     cost: float
+    default: float = 0.0
+    prerequisites: List[str] = field(default_factory=list)
     inputs: List[Effect] = field(default_factory=list)
     effects: List[Effect] = field(default_factory=list)

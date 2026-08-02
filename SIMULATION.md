@@ -17,7 +17,7 @@ All paths below are relative to `gamedata/data/`, which mirrors the Democracy 
 | `simulation/simulation.csv` | Core statistics (“nodes”) such as GDP, CrimeRate, CO₂, etc. | Each row defines metadata (`name`, `guiname`, `description`, `min`, `max`) and then a list of `source,equation,inertia` triplets representing inbound influences (edges) for the DAG. |
 | `simulation/votertypes.csv` | Voter happiness + membership nodes. | Similar structure: default support (`default`), membership share (`percentage`), and `Influences` columns that create edges. Membership nodes (`<Group>_freq`) are synthesized automatically. |
 | `simulation/policies.csv` | Policy sliders that the player can adjust. | Columns include slider identifier (`slider`), action costs (`introduce`, `cancel`, `raise`, `lower`), department, `mincost`/`maxcost` (and analogous income columns), `cost multiplier` / `incomemultiplier` expressions that now get parsed into live budget modifiers, implementation lag, and `#Effects` columns describing outbound edges toward other nodes. |
-| `simulation/sliders.csv` | Slider metadata. | Declares whether a slider is `DISCRETE` (enum-like) or `PERCENTAGE` (continuous). For discrete sliders, the textual options (`NONE`, `LOW`, `MEDIUM`, …) imply evenly spaced normalized levels between 0 and 1. For percentage sliders the numeric bounds (e.g., `0`, `75`) are recorded for reference, but the simulator treats them as continuous 0 – 1 values. |
+| `simulation/sliders.csv` | Slider metadata. | Declares whether a slider is `DISCRETE` (enum-like) or `PERCENTAGE` (continuous). Discrete labels (`NONE`, `LOW`, `MEDIUM`, …) provide normalized action levels, while the executable still stores the target as a float. Percentage sliders use continuous 0 – 1 values. |
 | `simulation/situations.csv` | Dynamic modifiers (“situations”). | Each row defines trigger thresholds, optional upkeep cost, a list of input effects (how existing nodes/policies influence the latent value), and output effects (how the active situation feeds back into the DAG). Inputs/outputs can also specify inertia so their impact ramps over multiple turns. |
 | `missions/<country>/<country>.txt` | Country-specific configuration. | Sections include `[config]` (currency, demographics), `[options]` (game modifiers), `[stats]` (display text), and `[policies]` (initial slider positions normalized 0 – 1). |
 | `missions/<country>/overrides/*.ini` | Graph overrides per country. | Inside `[override]` blocks: remove (`Equation = DELETE`) or inject new edges between hosts and targets, optionally overriding inertia. |
@@ -65,9 +65,13 @@ Common behavioural patterns handled correctly:
    - Policy sliders are filled with mission-provided levels, clamped to `[0, 1]`.
    - If a matching baseline save exists (`gamedata/saves/<country>0.xml`), its `simvalues`/`policies` override the defaults so the simulator starts from the exact in-game conditions.
    - Situation latent values are evaluated from their inputs to determine which situations start active (respecting their start/stop trigger thresholds).
-   - Each effect (graph edge or situation link) is given an initial entry in the effect-memory dictionary so inertia has state to blend toward.
-   - When `...1.xml` exists as well, the simulator computes per-node calibration factors by comparing the predicted no-op turn against the observed save. Each node’s delta is then scaled by this factor every turn, anchoring passive runs to what the real game produces.
-   - Political capital starts at `POLITICAL_CAPITAL_PER_MINISTER * 5`, capped by `POLITICAL_CAPITAL_MAX_MULTIPLIER`.
+   - Each serialized inertial link is restored as a raw 33-slot effect ring. On load, the live effect is the average of the leading `inertia` slots, with policy links additionally scaled by ministerial effectiveness.
+   - The loader also restores hidden global neurons, voter histories, policy runtime fields, delayed policy throttles, ministerial effectiveness, situation state, and finance snapshots. Policy runtime distinguishes the current policy-neuron value (`<val>`) from the requested slider target (`<targ>`); the current value moves toward the target by a fixed `1 / implementation_time` step each turn. No per-node response calibration is applied; parity differences remain observable.
+   - Political capital is restored from `<politicalcapital><points>`. The
+     simulator also retains the baseline active-minister accrual recovered
+     from the initial save; for the shipped UK start this is 26 points per
+     turn with a 52-point cap. Countries without a baseline save use the
+     configured minister-count fallback.
 
 2. **Action Phase** (`apply_actions`):
    - Each `PolicyAction` contains a `policy_name` and a normalized `delta`.
@@ -78,21 +82,23 @@ Common behavioural patterns handled correctly:
    - Validation steps:
      - Policy must exist and enough political capital must remain.
      - Slider metadata determines what levels are legal.
-       * **Discrete** sliders use the enumerated labels to derive evenly spaced levels, and the new value must exactly match one of them.
+       * **Discrete** sliders use the enumerated labels for action suggestions and validation. The executable still stores a normalized target float, so a captured UI drag can land between labels; the simulator accepts such normalized targets for controlled parity experiments.
        * **Percentage / continuous** sliders can take any value within `[0, 1]`.
      - Attempting to move beyond the boundary (no actual change) raises an error.
    - Capital is deducted per accepted action; state values are not recalculated yet.
 
 3. **End of Turn** (`process_end_of_turn`):
-   - For each node, sum all incoming effects: `current_value + Σ delta`. Every effect keeps its own inertia buffer (`value += (target - value)/inertia`) so delayed influences ramp gradually over multiple turns.
-   - Recompute every situation’s latent value, update `active_situations` based on hysteresis (start ≥ `start_trigger`, stop < `stop_trigger`), and inject their outputs into the DAG using the same inertia rule.
-   - Clamp to each node’s declared `[min, max]`.
-   - Refill political capital by half of `POLITICAL_CAPITAL_PER_MINISTER`, capped again.
+   - Advance policy runtime first: implementation fractions increase by minister effectiveness divided by implementation time, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
+   - Advance the effect vector using the pre-turn policy values as source snapshots. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. Saved rings contain raw samples, not minister-scaled live values.
+   - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
+   - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
+   - Add the active-minister political-capital accrual and clamp at the
+     corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.
 
 4. **Random Systems**:
    - `process_dilemmas`, `process_attacks`, and `process_events` exist as explicit stubs so that future work can plug in the missing systems without changing the core APIs today.
 
-The simulator uses a synchronous update: every node reads from the previous state and writes to a new state object, preventing cascading artefacts within the same turn.
+The simulator returns a new state object, but its core update is intentionally ordered rather than fully synchronous: direct effects can cascade to later nodes in the same pass, as they do in the game. The 33-pass `PreCalcCoreSimulation` settling routine used by the executable during initialization is distinct from the normal one-pass turn path.
 
 ---
 
@@ -102,8 +108,8 @@ Two functions make the simulator easy to integrate with AI agents:
 
 | Function | Description |
 |----------|-------------|
-| `list_available_actions(state, data=None)` | Returns `PolicyActionOption` objects describing every feasible single-step policy adjustment, including the action type (`introduce`/`cancel`/`raise`/`lower`), political capital required, and the policy’s implementation delay. Slider values are treated as continuous 0‑1 with a default 5 % step, so agents can make incremental adjustments even if the UI labels are discrete. |
-| `apply_actions(state, actions, data=None)` | Applies validated actions, raising informative errors if the move is impossible (unknown policy, insufficient capital, invalid discrete level, or no change at boundary). The returned state is ready for `process_end_of_turn`. |
+| `list_available_actions(state, data=None)` | Returns `PolicyActionOption` objects describing every feasible single-step policy adjustment, including the action type (`introduce`/`cancel`/`raise`/`lower`), political capital required, and the policy’s implementation delay. Suggestions use a default 5 % normalized step, while the state retains separate current and desired policy values. |
+| `apply_actions(state, actions, data=None)` | Applies validated actions, raising informative errors if the move is impossible (unknown policy, insufficient capital, invalid target, or no change at boundary). It changes the desired slider target and spends capital; the current policy value remains unchanged until `process_end_of_turn` advances implementation. |
 
 The CLI mirrors these endpoints:
 
@@ -148,7 +154,7 @@ uv run main.py node Health --country uk
 ### Budget Tracking
 
 - Each `SimulationState` carries `policy_costs`, `policy_incomes`, `total_expenditure`, and `total_income`, all recomputed whenever policies or node values change.
-- Policy cost/income multipliers are read from the CSV (`cost multiplier`, `incomemultiplier`) and evaluated every turn so health-driven pension costs or situation-driven healthcare overruns are reflected automatically.
+- A loaded save uses its serialized cost/income multipliers and ministerial scalars to reproduce the observed finance snapshot. Fresh or explicitly dynamic calculations can evaluate the CSV modifiers against the current context, so health-driven pension costs and situation-driven healthcare overruns remain available for experiments.
 - `main.py` prints political capital, total income, total expenditure, and the net balance after every metric table, and `describe --verbose` augments the policy table with live cost/income columns for quick audits.
 
 ### Savegame Interop
@@ -157,8 +163,8 @@ uv run main.py node Health --country uk
 
 | Function | Description |
 |----------|-------------|
-| `parse_savegame(path)` | Parses the (slightly malformed) XML save into a `SaveGame` dataclass containing mission metadata, all `simvalues`, and policy slider levels. |
-| `load_state_from_savegame(path, data=None)` | Builds a `SimulationState` seeded from the save (node values, policy sliders, current turn) so the simulator can continue from an in-game snapshot. |
+| `parse_savegame(path)` | Parses the (slightly malformed) XML save into a `SaveGame` dataclass containing all `simvalues`, current policy values, requested policy targets, finance lines, hidden neurons, voter fields, policy runtime fields, and serialized effect rings. |
+| `load_state_from_savegame(path, data=None)` | Builds a `SimulationState` seeded from the save (node values, current/desired policy values, runtime fields, and current turn) so the simulator can continue from an in-game snapshot. |
 | `compare_state_to_savegame(state, save, tolerance)` | Produces a `StateComparison` listing value/policy discrepancies and missing entries, making it easy to sanity-check the simulator against the real game. |
 
 Example:

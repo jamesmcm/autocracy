@@ -289,10 +289,20 @@ def load_situations(root: Path) -> Dict[str, SituationDefinition]:
                 split_index = len(row)
             inputs_raw = row[13:split_index] if len(row) > 13 else []
             effects_raw = row[split_index + 1 :] if split_index + 1 < len(row) else []
+            default = 0.0
+            prerequisites: List[str] = []
             inputs: List[Effect] = []
             for idx, cell in enumerate(inputs_raw):
                 parsed = _parse_effect_cell(name, cell)
                 if not parsed or not parsed.target:
+                    continue
+                if parsed.target == "_default_":
+                    default = _safe_float(parsed.expression, default=0.0)
+                    continue
+                if parsed.target == "_prereq_":
+                    prerequisite = parsed.expression.strip()
+                    if prerequisite:
+                        prerequisites.append(prerequisite)
                     continue
                 effect = Effect(
                     source=parsed.target,
@@ -319,6 +329,8 @@ def load_situations(root: Path) -> Dict[str, SituationDefinition]:
                 start_trigger=start_trigger,
                 stop_trigger=stop_trigger,
                 cost=cost,
+                default=default,
+                prerequisites=prerequisites,
                 inputs=inputs,
                 effects=effects,
             )
@@ -389,6 +401,13 @@ def load_country_setup(root: Path, country: str) -> CountrySetup:
         options=options,
         stats=stats,
         overrides=overrides,
+        economic_cycle_start=_safe_float(config_data.get("economic_cycle_start", "0")),
+        wealth_mod=_safe_float(config_data.get("wealth_mod", "1"), default=1.0),
+        min_income=_safe_float(config_data.get("min_income", "0")),
+        max_income=_safe_float(config_data.get("max_income", "0")),
+        min_gdp=_safe_float(config_data.get("min_gdp", "0")),
+        max_gdp=_safe_float(config_data.get("max_gdp", "0")),
+        starting_debt=_safe_float(config_data.get("starting_debt", "0")),
     )
 
 

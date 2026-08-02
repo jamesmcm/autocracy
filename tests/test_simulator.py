@@ -16,6 +16,8 @@ def test_state_serialization_round_trip(tmp_path):
     restored = simulator.state_from_dict(payload)
     assert restored.country == state.country
     assert restored.policies == state.policies
+    assert restored.policy_desired_throttles == state.policy_desired_throttles
+    assert restored.political_capital_income == state.political_capital_income
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
     reloaded = simulator.load_state(out_path)
@@ -28,7 +30,55 @@ def test_apply_actions_allows_small_adjustments_within_bounds():
         state,
         [PolicyAction(policy_name="BusLanes", delta=0.1)],
     )
-    assert updated.policies["BusLanes"] > state.policies["BusLanes"]
+    assert updated.policies["BusLanes"] == state.policies["BusLanes"]
+    assert updated.policy_desired_throttles["BusLanes"] > state.policies["BusLanes"]
+
+
+def test_policy_slider_change_uses_fixed_step_output_throttle():
+    data = simulator.load_simulation_data()
+    state, graph = simulator.get_initial_state("uk")
+    policy = data.policies["BusLanes"]
+    current = state.policies[policy.name]
+    current_throttle = state.effect_throttles[policy.name]
+    updated = simulator.apply_actions(
+        state,
+        [PolicyAction(policy_name=policy.name, delta=0.05)],
+        data=data,
+    )
+
+    assert updated.policy_desired_throttles[policy.name] == pytest.approx(current + 0.05)
+    assert updated.effect_throttles[policy.name] == pytest.approx(current_throttle)
+
+    advanced = simulator.process_end_of_turn(updated, graph, data=data)
+    expected = min(
+        current + 0.05,
+        current_throttle + 1.0 / policy.implementation_time,
+    )
+    assert advanced.effect_throttles[policy.name] == pytest.approx(expected)
+    assert advanced.policies[policy.name] == pytest.approx(expected)
+
+
+def test_policy_introduction_exposes_effects_during_implementation():
+    data = simulator.load_simulation_data()
+    state, graph = simulator.get_initial_state("uk")
+    policy = data.policies["MicrogenerationGrants"]
+    updated = simulator.apply_actions(
+        state,
+        [PolicyAction(policy_name=policy.name, delta=0.5)],
+        data=data,
+    )
+
+    assert updated.policy_active[policy.name]
+    assert updated.policy_implementations[policy.name] == pytest.approx(0.0)
+    advanced = simulator.process_end_of_turn(updated, graph, data=data)
+    expected_implementation = (
+        state.ministerial_effectiveness[policy.department] / policy.implementation_time
+    )
+    assert advanced.policy_implementations[policy.name] == pytest.approx(
+        expected_implementation
+    )
+    assert advanced.effect_throttles[policy.name] == pytest.approx(0.5)
+    assert advanced.policies[policy.name] == pytest.approx(0.5)
 
 
 def test_process_end_of_turn_advances_turn_and_updates_values():
@@ -84,15 +134,15 @@ def test_lower_and_cancel_are_distinct():
     state, _ = simulator.get_initial_state("uk")
     options = simulator.list_available_actions(state, data=data)
     lowers = [
-        opt for opt in options if opt.policy_name == "UnemployedBenefit" and opt.action_type == "lower"
+        opt for opt in options if opt.policy_name == "BusLanes" and opt.action_type == "lower"
     ]
     cancels = [
-        opt for opt in options if opt.policy_name == "UnemployedBenefit" and opt.action_type == "cancel"
+        opt for opt in options if opt.policy_name == "BusLanes" and opt.action_type == "cancel"
     ]
     assert lowers, "Expected lower option"
     assert cancels, "Expected cancel option"
-    assert lowers[0].cost == data.policies["UnemployedBenefit"].lower_cost
-    assert cancels[0].cost == data.policies["UnemployedBenefit"].cancel_cost
+    assert lowers[0].cost == data.policies["BusLanes"].lower_cost
+    assert cancels[0].cost == data.policies["BusLanes"].cancel_cost
     assert lowers[0].resulting_level > 0.0
 
 
@@ -124,9 +174,9 @@ def test_initial_state_matches_initial_save():
         assert state.policies[name] == pytest.approx(value, rel=1e-6, abs=1e-6)
 
 
-def test_response_factors_seeded_from_turn_one_save():
+def test_initial_state_does_not_use_hidden_response_calibration():
     state, _ = simulator.get_initial_state("uk")
-    assert "GDP" in state.response_factors
+    assert not state.response_factors
 
 
 def test_street_gangs_activation_thresholds():
@@ -152,10 +202,14 @@ def test_policy_effect_inertia_respected():
     assert baseline is not None
     state.policies["AlcoholLaw"] = 1.0
     next_state = simulator.process_end_of_turn(state, graph, data=data)
-    context = {**state.values, **state.policies, **state.situations}
-    target_value = simulator.evaluate_expression(alcohol_effect.expression, 1.0, context=context)
-    inertia = alcohol_effect.inertia or 1.0
-    expected = baseline + (target_value - baseline) / inertia
+    history = next(
+        item
+        for item in next_state.effect_histories
+        if item.effect_id == alcohol_effect.effect_id
+    )
+    inertia = max(1, int(alcohol_effect.inertia or 0.0))
+    expected = sum(history.values[:inertia]) / inertia
+    expected *= simulator._policy_effect_scale(state, alcohol_effect, data)
     assert next_state.effects[alcohol_effect.effect_id] == pytest.approx(expected)
 
 
@@ -182,7 +236,9 @@ def test_policy_costs_reflect_health_multiplier():
     state, _ = simulator.get_initial_state("uk")
     baseline = state.policy_costs["StatePensions"]
     healthier = replace(state, values={**state.values, "Health": 1.0})
-    simulator._recalculate_budget(healthier, data)
+    simulator._recalculate_budget(
+        healthier, data, use_serialized_runtime_fields=False
+    )
     assert healthier.policy_costs["StatePensions"] > baseline
 
 
@@ -191,5 +247,5 @@ def test_alcoholism_increases_state_health_service_cost():
     state, _ = simulator.get_initial_state("uk")
     baseline = state.policy_costs["StateHealthService"]
     sober = replace(state, situations={**state.situations, "Alcoholism": 0.0})
-    simulator._recalculate_budget(sober, data)
+    simulator._recalculate_budget(sober, data, use_serialized_runtime_fields=False)
     assert baseline > sober.policy_costs["StateHealthService"]
