@@ -8,6 +8,23 @@ import networkx as nx
 
 
 @dataclass(slots=True)
+class SimulationConfig:
+    """Toggle the game's stochastic systems.
+
+    All systems default to **off**: the shipped save pair is reproduced
+    deterministically, and only the systems explicitly enabled by a caller
+    mutate the state between turns.  ``random_seed`` makes enabled systems
+    reproducible across runs.
+    """
+
+    random_events: bool = False
+    dilemmas: bool = False
+    pressure_group_events: bool = False
+    assassinations: bool = False
+    random_seed: int = 0
+
+
+@dataclass(slots=True)
 class BudgetModifier:
     """Describes how another node/policy scales a budget line."""
 
@@ -162,6 +179,13 @@ class SimulationState:
     ministerial_effectiveness: Dict[str, float] = field(default_factory=dict)
     ministerial_competence: Dict[str, float] = field(default_factory=dict)
     political_capital_income: float = 0.0
+    # Human-readable record of stochastic-system firings this run (events,
+    # dilemmas, attacks).  Only populated when the corresponding
+    # ``SimulationConfig`` toggle is enabled.
+    event_log: List[str] = field(default_factory=list)
+    # Cross-turn bookkeeping for the attack and pressure-group systems.
+    fired_plots: List[str] = field(default_factory=list)
+    group_threats: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

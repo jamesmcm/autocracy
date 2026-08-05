@@ -66,7 +66,7 @@ Common behavioural patterns handled correctly:
    - If a matching baseline save exists (`gamedata/saves/<country>0.xml`), its `simvalues`/`policies` override the defaults so the simulator starts from the exact in-game conditions.
    - Situation latent values are evaluated from their inputs to determine which situations start active (respecting their start/stop trigger thresholds).
    - Each serialized inertial link is restored as a raw 33-slot effect ring. On load, the live effect is the average of the leading `inertia` slots, with policy links additionally scaled by ministerial effectiveness.
-   - The loader also restores hidden global neurons, voter histories, policy runtime fields, delayed policy throttles, ministerial effectiveness, situation state, and finance snapshots. Policy runtime distinguishes the current policy-neuron value (`<val>`) from the requested slider target (`<targ>`); the current value moves toward the target by a fixed `1 / implementation_time` step each turn. No per-node response calibration is applied; parity differences remain observable.
+   - The loader also restores hidden global neurons, voter histories, policy runtime fields, delayed policy throttles, ministerial effectiveness, situation state, finance snapshots, and the `<inherited>` simvalue block (the values from two turns ago). Policy runtime distinguishes the current policy-neuron value (`<val>`) from the requested slider target (`<targ>`); the current value moves toward the target by a fixed `1 / implementation_time` step each turn. No per-node response calibration is applied; parity differences remain observable.
    - Political capital is restored from `<politicalcapital><points>`. The
      simulator also retains the baseline active-minister accrual recovered
      from the initial save; for the shipped UK start this is 26 points per
@@ -90,13 +90,35 @@ Common behavioural patterns handled correctly:
 3. **End of Turn** (`process_end_of_turn`):
    - Advance policy runtime first: implementation fractions increase by minister effectiveness divided by implementation time, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
    - Advance the effect vector using the pre-turn policy values as source snapshots. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. Saved rings contain raw samples, not minister-scaled live values.
+     The executable only writes a fresh ring sample for simvalue and situation sources (situations while active) every turn; a settled policy's ring keeps its older samples, which is why serialized policy rings still hold values from earlier, lower slider levels. The simulator mirrors that rule: policy rings advance only while the policy is moving toward its target or still rolling out.
+   - One parity calibration is applied to `BorderControls -> Immigration`: the shipped save pair implies that link is *not* ministerially scaled (its implied contribution is the raw −0.4 ring value). Every other policy effect on the simvalue nodes does carry the ministerial scale.
    - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
    - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
    - Add the active-minister political-capital accrual and clamp at the
      corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.
 
-4. **Random Systems**:
-   - `process_dilemmas`, `process_attacks`, and `process_events` exist as explicit stubs so that future work can plug in the missing systems without changing the core APIs today.
+4. **Random Systems** (`SimulationConfig`):
+   - `process_events`, `process_dilemmas`, `process_attacks` and the
+     pressure-group threat loop are implemented in `autocracy/events.py`,
+     driven by the shipped `events/*.txt`, `dilemmas/*.txt`,
+     `attacks/*.txt` and `pressuregroups.csv` data.
+   - Every system defaults to **off**. `SimulationConfig` carries
+     `random_events`, `dilemmas`, `pressure_group_events`, `assassinations`
+     and a `random_seed`; a config with everything off is a bit-for-bit no-op,
+     which is what the deterministic save-parity runs rely on.
+   - When enabled, event trigger chances are approximated from each file's
+     `_random_` base constant plus its evaluated condition influences, rolls
+     use the seeded RNG, and `CreateGrudge(...)` scripts apply one-shot
+     opinion shifts to voter values/frequencies and simvalues. Dilemmas
+     fire when their latent influence sum crosses 0.5 and resolve with a
+     seeded option choice. Plots and assassinations require the matching
+     extremist pressure group's support to reach the file's `MinStrength`.
+   - The executable keeps unstored random-system state (event cooldowns,
+     group strength), so live-game timing is not reproduced exactly;
+     enabled runs are reproducible through the seed.
+   - CLI: `uv run main.py simulate --turns 4 --events --dilemmas
+     --pressure-groups --assassinations --random-seed 42` (the `agent`
+     command accepts the same flags).
 
 The simulator returns a new state object, but its core update is intentionally ordered rather than fully synchronous: direct effects can cascade to later nodes in the same pass, as they do in the game. The 33-pass `PreCalcCoreSimulation` settling routine used by the executable during initialization is distinct from the normal one-pass turn path.
 
@@ -163,7 +185,7 @@ uv run main.py node Health --country uk
 
 | Function | Description |
 |----------|-------------|
-| `parse_savegame(path)` | Parses the (slightly malformed) XML save into a `SaveGame` dataclass containing all `simvalues`, current policy values, requested policy targets, finance lines, hidden neurons, voter fields, policy runtime fields, and serialized effect rings. |
+| `parse_savegame(path)` | Parses the (slightly malformed) XML save into a `SaveGame` dataclass containing all `simvalues`, current policy values, requested policy targets, finance lines, hidden neurons, voter fields, policy runtime fields, the `<inherited>` simvalue block, and serialized effect rings. |
 | `load_state_from_savegame(path, data=None)` | Builds a `SimulationState` seeded from the save (node values, current/desired policy values, runtime fields, and current turn) so the simulator can continue from an in-game snapshot. |
 | `compare_state_to_savegame(state, save, tolerance)` | Produces a `StateComparison` listing value/policy discrepancies and missing entries, making it easy to sanity-check the simulator against the real game. |
 

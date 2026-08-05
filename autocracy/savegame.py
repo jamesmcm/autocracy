@@ -47,6 +47,10 @@ class SaveGame:
     ministerial_effectiveness: Dict[str, float] = field(default_factory=dict)
     ministerial_competence: Dict[str, float] = field(default_factory=dict)
     political_capital: float = 0.0
+    # The save's <inherited> block holds the simvalues as of two turns ago.
+    # The game uses the current-vs-inherited comparison to decide which
+    # inertial effect rings receive a new sample each turn.
+    inherited_values: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -324,6 +328,18 @@ def parse_savegame(path: str | Path) -> SaveGame:
             product = experience * suitability
             ministerial_competence[job] = max(0.0, min(1.0, 0.2 + 0.8 * product))
             ministerial_effectiveness[job] = max(0.0, min(1.0, 0.8 + 0.4 * product))
+    inherited_values: Dict[str, float] = {}
+    inherited_elem = root.find("inherited")
+    if inherited_elem is not None:
+        for inherited in inherited_elem.findall("ival"):
+            name = inherited.findtext("name")
+            value = inherited.findtext("val")
+            if not name or value is None:
+                continue
+            try:
+                inherited_values[name.strip()] = float(value)
+            except ValueError:
+                continue
     return SaveGame(
         country=country.lower(),
         turn=turn,
@@ -354,6 +370,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         effect_throttles=effect_throttles,
         ministerial_effectiveness=ministerial_effectiveness,
         ministerial_competence=ministerial_competence,
+        inherited_values=inherited_values,
     )
 
 

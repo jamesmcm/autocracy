@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, Optional
 
-from .models import PolicyAction, SimulationState
+from .models import PolicyAction, SimulationConfig, SimulationState
 from . import simulator
 
 
@@ -15,9 +15,11 @@ class BaseAgent:
         country: str = "uk",
         gamedata_root: Optional[str | Path] = None,
         state: Optional[SimulationState] = None,
+        config: Optional[SimulationConfig] = None,
     ) -> None:
         self.gamedata_root = str(gamedata_root) if gamedata_root else None
         self.data = simulator.load_simulation_data(self.gamedata_root)
+        self.config = config
         if state is None:
             self.state, self.graph = simulator.get_initial_state(
                 country, self.gamedata_root
@@ -43,7 +45,7 @@ class BaseAgent:
 
     def end_turn(self):
         self.state = simulator.process_end_of_turn(
-            self.state, self.graph, data=self.data
+            self.state, self.graph, data=self.data, config=self.config
         )
 
     def step(self) -> SimulationState:

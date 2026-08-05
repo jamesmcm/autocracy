@@ -83,16 +83,41 @@ uv run python -m autocracy.parity gamedata/saves/uk0.xml --output /tmp/uk0-parit
 uv run pytest tests/test_parity.py -q
 ```
 
-`parity_cases/uk_noop.json` records the deterministic shipped-save transition
-(`uk0.xml` → `uk1.xml`), including continuous state, finance, situations,
-hidden values, voters, policy runtime, and the complete 303-record effect
-memory corpus. `parity_cases/uk_bus_lanes_live.json` records a controlled Xvfb
+`parity_cases/uk_noop.json` records both deterministic shipped-save
+no-op transitions (`uk0.xml` → `uk1.xml` → `uk2.xml`), including continuous
+state, finance, situations, hidden values, voters, policy runtime, the
+`<inherited>` snapshot, and sample records from the 303-ring effect-memory
+corpus. `parity_cases/uk_bus_lanes_live.json` records a controlled Xvfb
 capture of a Bus Lanes intervention and its current/target runtime fields.
 
-The no-op one-turn gate currently has a mean continuous-state error of about
-0.005. The larger remaining gaps are situation-manager timing and the
-`Immigration` input aggregate. Live-game node values remain observational
-because the executable has unstored random-system state.
+Both shipped no-op turns now stay inside a mean continuous-state error of
+about 0.003, with a single remaining outlier (`Immigration`, ~0.03): the
+save pair implies `BorderControls -> Immigration` is applied without the
+ministerial scale, and even then a small residual remains because the game's
+unstored random-system state cannot be reproduced. The ring-update rule
+(only simvalue/situation rings advance every turn; settled policy rings
+keep their older samples) and that calibration are described in
+`SIMULATION.md`.
+
+### Stochastic systems
+
+Random events, dilemmas, pressure-group events and extremist
+plots/assassinations are data-driven (`gamedata/data/simulation/events`,
+`dilemmas`, `attacks`, `pressuregroups.csv`) but **off by default**, so
+parity runs are deterministic:
+
+```bash
+# Fully deterministic (default)
+uv run main.py simulate --turns 4
+
+# Enable systems with a reproducible seed
+uv run main.py simulate --turns 4 --events --dilemmas \
+    --pressure-groups --assassinations --random-seed 42
+```
+
+Programmatic callers pass a `SimulationConfig` to `process_end_of_turn` or
+`BaseAgent`; an all-off config is a bit-for-bit no-op. See `SIMULATION.md`
+for the semantics.
 
 ### Savegame integration
 

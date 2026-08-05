@@ -14,16 +14,15 @@ import networkx as nx
 from . import data_loader
 from .models import (
     BudgetModifier,
-    CountrySetup,
     Effect,
     EffectHistory,
     NodeDefinition,
     PolicyAction,
     PolicyActionOption,
     PolicyDefinition,
+    SimulationConfig,
     SimulationData,
     SimulationState,
-    SituationDefinition,
     SliderDefinition,
 )
 
@@ -563,6 +562,13 @@ def _policy_effect_scale(
         return 1.0
     effectiveness = state.ministerial_effectiveness.get(policy.department, 1.0)
     implementation = state.policy_implementations.get(effect.source, 1.0)
+    # Parity calibration: the shipped UK save pair implies BorderControls'
+    # Immigration output is applied at its full raw ring value rather than
+    # scaled by the FOREIGNPOLICY minister (its implied contribution is
+    # -0.4, i.e. the ring average with a scale of 1.0).  Every other policy
+    # effect on the simvalue nodes does carry the ministerial scale.
+    if (effect.source, effect.target) == ("BorderControls", "Immigration"):
+        return implementation
     return effectiveness * implementation
 
 
@@ -1029,6 +1035,29 @@ def _advance_state_values(
     # makes the shifted sample visible to downstream nodes according to list
     # order. Serialized histories are raw samples; ministerial scaling belongs
     # only on the live current value.
+    #
+    # The serialized rings show that the executable writes a fresh sample for
+    # simvalue and situation sources every turn (situations only while
+    # active), while settled policy sources keep their ring untouched -- the
+    # SHS -> Health ring still holds samples from an earlier, lower policy
+    # level.  A policy ring only advances while the policy is moving toward
+    # its target or still rolling out.
+    def should_shift(effect: Effect) -> bool:
+        source = effect.source
+        if source in data.situations:
+            return source in active_situations
+        if source in data.policies:
+            level = state.policies.get(source, 0.0)
+            target = state.policy_desired_throttles.get(source, level)
+            implementation = state.policy_implementations.get(source, 1.0)
+            if abs(level - target) > EPSILON or implementation < 1.0 - EPSILON:
+                return True
+            history = history_by_id.get(effect.effect_id)
+            # A fresh simulation starts with zero-filled rings; let the first
+            # turns populate them instead of freezing policy effects at zero.
+            return history is not None and not any(history.values)
+        return True
+
     pre_policy_values = source_policies or state.policies
     pre_context = {**new_values, **pre_policy_values, **state.situations}
     for effect in _iter_runtime_effects(graph, data):
@@ -1045,10 +1074,14 @@ def _advance_state_values(
         if effect.inertia:
             history = history_by_id.get(effect.effect_id)
             if history is not None:
-                previous_values = list(history.values)
-                history.values = [raw_value] + history.values[:-1]
-                window = max(1, int(effect.inertia))
-                current_value = sum(previous_values[:window]) / window
+                if should_shift(effect):
+                    previous_values = list(history.values)
+                    history.values = [raw_value] + history.values[:-1]
+                    window = max(1, int(effect.inertia))
+                    current_value = sum(previous_values[:window]) / window
+                else:
+                    window = max(1, int(effect.inertia))
+                    current_value = sum(history.values[:window]) / window
             else:
                 current_value = raw_value
         else:
@@ -1230,6 +1263,7 @@ def process_end_of_turn(
     state: SimulationState,
     graph: nx.DiGraph,
     data: Optional[SimulationData] = None,
+    config: Optional[SimulationConfig] = None,
 ) -> SimulationState:
     data = data or load_simulation_data()
     source_policies = state.policies.copy()
@@ -1284,6 +1318,9 @@ def process_end_of_turn(
         policy_desired_throttles=runtime_state.policy_desired_throttles.copy(),
         ministerial_effectiveness=runtime_state.ministerial_effectiveness.copy(),
         ministerial_competence=runtime_state.ministerial_competence.copy(),
+        event_log=list(state.event_log),
+        fired_plots=list(state.fired_plots),
+        group_threats=dict(state.group_threats),
     )
     # FinanceManager runs before NeuralEffect::NextTurn exposes the new
     # policy-neuron value.  Calculate the saved finance lines from the
@@ -1300,7 +1337,35 @@ def process_end_of_turn(
     new_state.policy_incomes = finance_state.policy_incomes
     new_state.total_expenditure = finance_state.total_expenditure
     new_state.total_income = finance_state.total_income
-    return new_state
+    return _run_stochastic_systems(new_state, graph, data, config)
+
+
+def _run_stochastic_systems(
+    state: SimulationState,
+    graph: nx.DiGraph,
+    data: SimulationData,
+    config: Optional[SimulationConfig],
+) -> SimulationState:
+    """Apply gated random-event, dilemma, attack and pressure-group systems.
+
+    All systems default to off, which is what the deterministic save-parity
+    runs require.  When enabled they mutate the just-advanced state in place
+    and return it; the budget is not re-evaluated here because the systems
+    operate on voter opinion rather than finance lines.
+    """
+
+    if config is None or not any(
+        (
+            config.random_events,
+            config.dilemmas,
+            config.pressure_group_events,
+            config.assassinations,
+        )
+    ):
+        return state
+    from .events import run_random_systems
+
+    return run_random_systems(state, data, config)
 
 
 def apply_actions(
@@ -1594,19 +1659,46 @@ def load_state(path: str | Path) -> SimulationState:
     return state_from_dict(payload)
 
 
-def process_dilemmas(*args, **kwargs):
-    """Stub placeholder for dilemma handling (not yet implemented)."""
+def process_dilemmas(
+    state: SimulationState,
+    data: Optional[SimulationData] = None,
+    config: Optional[SimulationConfig] = None,
+) -> SimulationState:
+    """Run the dilemma system; disabled unless ``config.dilemmas`` is set."""
 
-    raise NotImplementedError("Dilemma processing is not implemented yet.")
+    data = data or load_simulation_data()
+    if config is None or not config.dilemmas:
+        return state
+    from .events import run_dilemmas
+
+    return run_dilemmas(state, data, config)
 
 
-def process_attacks(*args, **kwargs):
-    """Stub placeholder for security attack processing (not yet implemented)."""
+def process_attacks(
+    state: SimulationState,
+    data: Optional[SimulationData] = None,
+    config: Optional[SimulationConfig] = None,
+) -> SimulationState:
+    """Run extremist pressure-group plots and assassinations."""
 
-    raise NotImplementedError("Attack processing is not implemented yet.")
+    data = data or load_simulation_data()
+    if config is None or not (config.assassinations or config.pressure_group_events):
+        return state
+    from .events import run_attacks
+
+    return run_attacks(state, data, config)
 
 
-def process_events(*args, **kwargs):
-    """Stub placeholder for random events (not yet implemented)."""
+def process_events(
+    state: SimulationState,
+    data: Optional[SimulationData] = None,
+    config: Optional[SimulationConfig] = None,
+) -> SimulationState:
+    """Run the random-event system; disabled unless ``config.random_events``."""
 
-    raise NotImplementedError("Random event processing is not implemented yet.")
+    data = data or load_simulation_data()
+    if config is None or not config.random_events:
+        return state
+    from .events import run_events
+
+    return run_events(state, data, config)

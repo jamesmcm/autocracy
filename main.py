@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from autocracy.models import PolicyAction
+from autocracy.models import PolicyAction, SimulationConfig
 from autocracy import simulator
 from autocracy.agent import PassiveAgent
 from autocracy.savegame import (
@@ -146,6 +146,22 @@ def _print_comparison(title: str, diffs, missing):
         console.print(f"[red]{title}: missing entries[/red] {', '.join(sorted(missing))}")
 
 
+def _simulation_config(
+    events: bool,
+    dilemmas: bool,
+    pressure_groups: bool,
+    assassinations: bool,
+    seed: int,
+) -> SimulationConfig:
+    return SimulationConfig(
+        random_events=events,
+        dilemmas=dilemmas,
+        pressure_group_events=pressure_groups,
+        assassinations=assassinations,
+        random_seed=seed,
+    )
+
+
 def _parse_policy_changes(changes: List[str]) -> List[PolicyAction]:
     actions: List[PolicyAction] = []
     for item in changes:
@@ -201,8 +217,22 @@ def simulate(
         "--state-out",
         help="Persist the final state snapshot after the run.",
     ),
+    events: bool = typer.Option(False, "--events", help="Enable random events."),
+    dilemmas: bool = typer.Option(False, "--dilemmas", help="Enable dilemmas."),
+    pressure_groups: bool = typer.Option(
+        False, "--pressure-groups", help="Enable pressure-group threat events."
+    ),
+    assassinations: bool = typer.Option(
+        False, "--assassinations", help="Enable extremist plots and assassinations."
+    ),
+    random_seed: int = typer.Option(0, "--random-seed", help="Seed for the stochastic systems."),
 ):
-    """Run the deterministic DAG update loop for the requested number of turns."""
+    """Run the deterministic DAG update loop for the requested number of turns.
+
+    Stochastic systems (events, dilemmas, pressure groups, assassinations) are
+    disabled unless the matching flag is passed; enabled systems use a
+    reproducible RNG seeded by ``--random-seed``.
+    """
 
     data = _prepare_data(gamedata)
     if state_in:
@@ -218,9 +248,16 @@ def simulate(
         state = simulator.apply_actions(state, actions, data=data)
         console.print("[green]Applied policy changes[/green]")
     _print_metrics(state, metric_list)
+    config = _simulation_config(
+        events, dilemmas, pressure_groups, assassinations, random_seed
+    )
     for _ in range(turns):
-        state = simulator.process_end_of_turn(state, graph, data=data)
+        state = simulator.process_end_of_turn(state, graph, data=data, config=config)
         _print_metrics(state, metric_list)
+    if state.event_log:
+        console.print("[yellow]Stochastic firings:[/yellow]")
+        for entry in state.event_log:
+            console.print(f"  {entry}")
     if state_out:
         simulator.save_state(state, state_out)
         console.print(f"Saved state to {state_out}")
@@ -325,19 +362,34 @@ def agent(
         help="Persist the final state snapshot for later comparison.",
     ),
     metrics: List[str] = typer.Option([], "--metric", "-m", help="Metrics to show after each loop."),
+    events: bool = typer.Option(False, "--events", help="Enable random events."),
+    dilemmas: bool = typer.Option(False, "--dilemmas", help="Enable dilemmas."),
+    pressure_groups: bool = typer.Option(
+        False, "--pressure-groups", help="Enable pressure-group threat events."
+    ),
+    assassinations: bool = typer.Option(
+        False, "--assassinations", help="Enable extremist plots and assassinations."
+    ),
+    random_seed: int = typer.Option(0, "--random-seed", help="Seed for the stochastic systems."),
 ):
     """Run the baseline agent loop that alternates between choosing actions and ending turns."""
 
     data_root = str(gamedata) if gamedata else None
+    config = _simulation_config(
+        events, dilemmas, pressure_groups, assassinations, random_seed
+    )
     if state_in:
         state = simulator.load_state(state_in)
         agent = PassiveAgent(
             country=state.country,
             gamedata_root=data_root,
             state=state,
+            config=config,
         )
     else:
-        agent = PassiveAgent(country=country, gamedata_root=data_root)
+        agent = PassiveAgent(
+            country=country, gamedata_root=data_root, config=config
+        )
     metric_list = metrics or DEFAULT_METRICS
     console.print(
         f"Starting agent loop for {agent.state.country.upper()} with passive strategy"
@@ -345,6 +397,10 @@ def agent(
     for _ in range(turns):
         agent.step()
         _print_metrics(agent.state, metric_list)
+    if agent.state.event_log:
+        console.print("[yellow]Stochastic firings:[/yellow]")
+        for entry in agent.state.event_log:
+            console.print(f"  {entry}")
     if state_out:
         agent.save_state(state_out)
         console.print(f"Saved state to {state_out}")
