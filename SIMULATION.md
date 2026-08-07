@@ -74,18 +74,25 @@ Common behavioural patterns handled correctly:
      configured minister-count fallback.
 
 2. **Action Phase** (`apply_actions`):
-   - Each `PolicyAction` contains a `policy_name` and a normalized `delta`.
+   - Each `PolicyAction` contains a `policy_name`, a normalized `delta`, and
+     an optional `action_type`.
    - Costs depend on what is happening:
-     * **Introduce** (0 → >0): use `introduce_cost`.
-     * **Cancel** (>0 → 0): use `cancel_cost`.
-     * **Modify** (>0 → >0): use `raise_cost` or `lower_cost` depending on the direction.
+     * **Introduce** (inactive → active): use `introduce_cost`.
+     * **Cancel** (a true switch-off, active flag flips): use `cancel_cost`.
+       The neuron value and slider target are left where they are.
+     * **Raise / Lower** (slider move): use `raise_cost` / `lower_cost`.
+       Dragging a slider down to its *floor* — even level 0 — is a `lower`,
+       the policy stays active.  Uncancellable policies can be lowered to
+       their floor but never cancelled.
    - Validation steps:
      - Policy must exist and enough political capital must remain.
      - Slider metadata determines what levels are legal.
        * **Discrete** sliders use the enumerated labels for action suggestions and validation. The executable still stores a normalized target float, so a captured UI drag can land between labels; the simulator accepts such normalized targets for controlled parity experiments.
        * **Percentage / continuous** sliders can take any value within `[0, 1]`.
      - Attempting to move beyond the boundary (no actual change) raises an error.
-   - Capital is deducted per accepted action; state values are not recalculated yet.
+   - Capital is deducted per accepted action; the finance lines are
+     recalculated against the post-orders active policy set (the game
+     recomputes them when the player confirms the orders).
 
 3. **End of Turn** (`process_end_of_turn`):
    - Advance policy runtime first: implementation fractions increase by minister effectiveness divided by implementation time, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
@@ -94,8 +101,12 @@ Common behavioural patterns handled correctly:
    - One parity calibration is applied to `BorderControls -> Immigration`: the shipped save pair implies that link is *not* ministerially scaled (its implied contribution is the raw −0.4 ring value). Every other policy effect on the simvalue nodes does carry the ministerial scale.
    - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
    - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
-   - Add the active-minister political-capital accrual and clamp at the
-     corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.
+    - Add the active-minister political-capital accrual and clamp at the
+      corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.
+    - Recompute the finance lines from the advanced policy values and the
+      advanced ministerial scalars, with the multiplier neurons evaluated at
+      the previous turn's nodes and the debt interest charged on the
+      freshly-rolled debt.
 
 4. **Random Systems** (`SimulationConfig`):
    - `process_events`, `process_dilemmas`, `process_attacks` and the
@@ -175,8 +186,25 @@ uv run main.py node Health --country uk
 
 ### Budget Tracking
 
-- Each `SimulationState` carries `policy_costs`, `policy_incomes`, `total_expenditure`, and `total_income`, all recomputed whenever policies or node values change.
-- A loaded save uses its serialized cost/income multipliers and ministerial scalars to reproduce the observed finance snapshot. Fresh or explicitly dynamic calculations can evaluate the CSV modifiers against the current context, so health-driven pension costs and situation-driven healthcare overruns remain available for experiments.
+- Each `SimulationState` carries `policy_costs`, `policy_incomes`, `total_expenditure`, and `total_income`.
+- Income and expenditure are **live-recomputed every turn** to match the game's `<finances>` block:
+  - income = sum over *active* income policies of `base(min,max,val) * wealth_mod * earn_scalar * incom_mult`;
+  - expenditure = the analogous cost sum, **plus** `wealth_mod ×` the active
+    situation costs, **plus** the quarterly debt interest
+    `debt * rate * 0.25`.
+- The multiplier neurons are evaluated from the *previous* turn's node values
+  (the game's one-turn history lag), and the ministerial scalars come from the
+  current competence (`earn_scalar = 0.875 + 0.25 · competence`, with
+  `cost_scalar = 2 - earn_scalar`).  All money arithmetic is rounded to
+  float32, which reproduces the serialized totals exactly.
+- The state also tracks the national `debt` (rolled forward by the last net),
+  the `credit_rating` (recomputed every other turn from the debt-to-GDP
+  ratio) and the `interest_rate` derived from it.
+- A loaded save uses its serialized cost/income multipliers and ministerial
+  scalars to reproduce the observed finance snapshot. Fresh or explicitly
+  dynamic calculations can evaluate the CSV modifiers against the current
+  context, so health-driven pension costs and situation-driven healthcare
+  overruns remain available for experiments.
 - `main.py` prints political capital, total income, total expenditure, and the net balance after every metric table, and `describe --verbose` augments the policy table with live cost/income columns for quick audits.
 
 ### Savegame Interop
