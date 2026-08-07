@@ -297,7 +297,13 @@ def load_situations(root: Path) -> Dict[str, SituationDefinition]:
                 if not parsed or not parsed.target:
                     continue
                 if parsed.target == "_default_":
-                    default = _safe_float(parsed.expression, default=0.0)
+                    # The _default_ cell is a small expression (e.g.
+                    # ``0.8+(0*x)``), not necessarily a bare number.
+                    from .simulator import evaluate_expression  # late import
+
+                    default = evaluate_expression(
+                        parsed.expression, 0.0, context={}
+                    )
                     continue
                 if parsed.target == "_prereq_":
                     prerequisite = parsed.expression.strip()

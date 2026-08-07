@@ -161,8 +161,28 @@ def test_uncancellable_cannot_be_cancelled():
     with pytest.raises(ValueError):
         simulator.apply_actions(
             state,
-            [PolicyAction(policy_name="BorderControls", delta=-state.policies["BorderControls"])]
+            [
+                PolicyAction(
+                    policy_name="BorderControls",
+                    delta=-state.policies["BorderControls"],
+                    action_type="cancel",
+                )
+            ],
         )
+
+
+def test_uncancellable_can_be_lowered_to_floor():
+    state, _ = simulator.get_initial_state("uk")
+    policy = state.policies["BorderControls"]
+    updated = simulator.apply_actions(
+        state,
+        [PolicyAction(policy_name="BorderControls", delta=-policy)],
+    )
+    assert updated.policy_desired_throttles["BorderControls"] == pytest.approx(0.0)
+    assert updated.policy_active["BorderControls"]
+    assert updated.political_capital == pytest.approx(
+        state.political_capital - 13.0  # BorderControls lower_cost
+    )
 
 
 def test_initial_state_matches_initial_save():

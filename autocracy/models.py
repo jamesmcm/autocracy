@@ -179,6 +179,25 @@ class SimulationState:
     ministerial_effectiveness: Dict[str, float] = field(default_factory=dict)
     ministerial_competence: Dict[str, float] = field(default_factory=dict)
     political_capital_income: float = 0.0
+    # Finance-manager runtime fields.  The game serializes these in the
+    # <finances>/<creditrating> blocks and recomputes them every turn:
+    #   debt = previous debt + (expenditure - income) charged last turn
+    #   credit_rating = credit-rating derived from the debt-to-GDP ratio
+    #   turns_since_credit = countdown to the next rating recomputation
+    #   ministerial_experience/suitability = per-department inputs to the
+    #       competence/efficiency scalars (experience grows each turn)
+    debt: float = 0.0
+    credit_rating: int = 0
+    turns_since_credit: int = 0
+    # The interest rate currently charged on the debt.  The game derives it
+    # from the credit rating each turn (the very first turn keeps the rate
+    # it started with, which the serialized <finances> n_3 records).
+    interest_rate: float = 0.0
+    ministerial_experience: Dict[str, float] = field(default_factory=dict)
+    ministerial_suitability: Dict[str, float] = field(default_factory=dict)
+    # Per-department minister loyalty, used to recompute the per-turn
+    # political-capital income (it drifts with loyalty).
+    ministerial_loyalty: Dict[str, float] = field(default_factory=dict)
     # Human-readable record of stochastic-system firings this run (events,
     # dilemmas, attacks).  Only populated when the corresponding
     # ``SimulationConfig`` toggle is enabled.
@@ -190,10 +209,19 @@ class SimulationState:
 
 @dataclass(slots=True)
 class PolicyAction:
-    """A requested change to a policy slider."""
+    """A requested change to a policy slider.
+
+    ``action_type`` records whether the change is a slider move (``raise`` /
+    ``lower``), a fresh introduction or a true switch-off (``cancel``).  The
+    game treats dragging a slider down to its floor as a ``lower`` (charged
+    at the lower cost, policy stays active), which is distinct from a
+    ``cancel`` (charged at the cancel cost, policy deactivates).  When the
+    type is not supplied the simulator infers it from the slider metadata.
+    """
 
     policy_name: str
     delta: float
+    action_type: Optional[str] = None
 
 
 @dataclass(slots=True)

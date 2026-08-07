@@ -51,6 +51,19 @@ class SaveGame:
     # The game uses the current-vs-inherited comparison to decide which
     # inertial effect rings receive a new sample each turn.
     inherited_values: Dict[str, float] = field(default_factory=dict)
+    # Finance-manager runtime fields from the <finances>/<creditrating>
+    # blocks.  ``total_income``/``total_expenditure`` are the game's
+    # displayed totals (finances n_2/n_1) which include wealth-scaled
+    # situation costs and debt interest; the per-policy
+    # ``policy_incomes``/``policy_costs`` are the (one-turn-lagged) history
+    # rings.
+    debt: float = 0.0
+    interest_rate: float = 0.0
+    credit_rating: int = 0
+    turns_since_credit: int = 0
+    ministerial_experience: Dict[str, float] = field(default_factory=dict)
+    ministerial_suitability: Dict[str, float] = field(default_factory=dict)
+    ministerial_loyalty: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -210,6 +223,35 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 continue
     total_expenditure = sum(policy_costs.values())
     total_income = sum(policy_incomes.values())
+    debt = 0.0
+    interest_rate = 0.0
+    finances_elem = root.find("finances")
+    if finances_elem is not None:
+        # The <finances> block carries the game's displayed totals (n_1 =
+        # expenditure, n_2 = income), the debt (n_5), the quarterly interest
+        # charge (n_4) and the interest rate (n_3).  These are what the UI
+        # shows; the per-policy history rings above lag one turn behind.
+        displayed_expenditure = _first_history_value(finances_elem.findtext("n_1"))
+        displayed_income = _first_history_value(finances_elem.findtext("n_2"))
+        if displayed_income or displayed_expenditure:
+            total_expenditure = displayed_expenditure
+            total_income = displayed_income
+        debt = _first_history_value(finances_elem.findtext("n_5"))
+        interest_rate = _first_history_value(finances_elem.findtext("n_3"))
+    credit_rating = 0
+    turns_since_credit = 0
+    credit_rating_elem = root.find(".//creditrating")
+    if credit_rating_elem is not None:
+        try:
+            credit_rating = int(float(credit_rating_elem.text))
+        except (TypeError, ValueError):
+            credit_rating = 0
+    turns_since_credit_elem = root.find(".//turns_since_credit")
+    if turns_since_credit_elem is not None:
+        try:
+            turns_since_credit = int(float(turns_since_credit_elem.text))
+        except (TypeError, ValueError):
+            turns_since_credit = 0
     political_capital = 0.0
     political_capital_elem = root.find("politicalcapital")
     if political_capital_elem is not None:
@@ -306,6 +348,9 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 pass
     ministerial_effectiveness: Dict[str, float] = {}
     ministerial_competence: Dict[str, float] = {}
+    ministerial_experience: Dict[str, float] = {}
+    ministerial_suitability: Dict[str, float] = {}
+    ministerial_loyalty: Dict[str, float] = {}
     ministers_elem = root.find("ministers")
     if ministers_elem is not None:
         for minister in ministers_elem.findall("minister"):
@@ -316,6 +361,10 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 experience = float(minister.findtext("exp", default="0"))
             except ValueError:
                 continue
+            try:
+                loyalty = float(minister.findtext("loyalty", default="0"))
+            except ValueError:
+                loyalty = 0.0
             suitability = 0.0
             for suit in minister.findall("suits/suit"):
                 if (suit.findtext("grp") or "").strip() != job:
@@ -328,6 +377,9 @@ def parse_savegame(path: str | Path) -> SaveGame:
             product = experience * suitability
             ministerial_competence[job] = max(0.0, min(1.0, 0.2 + 0.8 * product))
             ministerial_effectiveness[job] = max(0.0, min(1.0, 0.8 + 0.4 * product))
+            ministerial_experience[job] = experience
+            ministerial_suitability[job] = suitability
+            ministerial_loyalty[job] = loyalty
     inherited_values: Dict[str, float] = {}
     inherited_elem = root.find("inherited")
     if inherited_elem is not None:
@@ -370,7 +422,14 @@ def parse_savegame(path: str | Path) -> SaveGame:
         effect_throttles=effect_throttles,
         ministerial_effectiveness=ministerial_effectiveness,
         ministerial_competence=ministerial_competence,
+        ministerial_experience=ministerial_experience,
+        ministerial_suitability=ministerial_suitability,
+        ministerial_loyalty=ministerial_loyalty,
         inherited_values=inherited_values,
+        debt=debt,
+        interest_rate=interest_rate,
+        credit_rating=credit_rating,
+        turns_since_credit=turns_since_credit,
     )
 
 
@@ -416,14 +475,26 @@ def state_from_savegame(
     state.effect_throttles = save.effect_throttles.copy()
     state.ministerial_effectiveness = save.ministerial_effectiveness.copy()
     state.ministerial_competence = save.ministerial_competence.copy()
+    state.ministerial_experience = save.ministerial_experience.copy()
+    state.ministerial_suitability = save.ministerial_suitability.copy()
+    state.ministerial_loyalty = save.ministerial_loyalty.copy()
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position
+    state.debt = save.debt
+    state.credit_rating = save.credit_rating
+    state.turns_since_credit = save.turns_since_credit
+    state.interest_rate = save.interest_rate
     state.effect_histories = [
         EffectHistory(history.source, history.target, list(history.values))
         for history in save.effect_histories
     ]
     simulator.recompute_effects(state, graph, effect_histories=state.effect_histories)
+    # The per-policy rings loaded above are the one-turn-lagged finance
+    # history.  The displayed totals come from the <finances> block, which
+    # also includes wealth-scaled situation costs and debt interest.
+    state.total_income = save.total_income
+    state.total_expenditure = save.total_expenditure
     return state, graph
 
 

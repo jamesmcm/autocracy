@@ -4,6 +4,7 @@ import ast
 import json
 import math
 import re
+import struct
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
@@ -36,6 +37,17 @@ def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
+def _f32(value: float) -> float:
+    """Round to the game's single-precision finance arithmetic.
+
+    The executable computes every money line with SSE float32 ops, so a
+    float64 sum drifts off the serialized totals by ~0.02 once a few hundred
+    thousand currency units are involved.  Rounding each product/accumulator
+    to float32 reproduces the shipped <finances> block exactly.
+    """
+    return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
 def _ensure_node(graph: nx.DiGraph, nodes: Dict[str, NodeDefinition], name: str) -> None:
     if name in graph:
         return
@@ -66,7 +78,11 @@ def _sanitize_expression(expr: str) -> str:
     # ``strtod``.  It therefore reads the token as 0.0; treating it as 0.5
     # creates a large, silent parity error in ChildBenefit -> Equality.
     expr = re.sub(r"(?<![\w.])([+-]?\d+\.\d+)\.\d+", r"\1", expr)
-    expr = re.sub(r"(\d)\(", r"\1*(", expr)
+    # The game's parser reads a bare ``-0.1(-0.6*x)`` as the concatenation
+    # ``-0.1 + (-0.6*x)`` (i.e. -0.1 - 0.6*x), not as implicit
+    # multiplication.  Only InnerCityRiots' CCTV input uses the pattern, but
+    # it shifts the situation latent enough to gate activation.
+    expr = re.sub(r"(\d)\(", r"\1+(", expr)
     cleaned_chars = []
     open_parens = 0
     for ch in expr:
@@ -125,9 +141,13 @@ def _next_level(
         if current >= 1.0 - EPSILON:
             return None
         return _clamp(current + step, 0.0, 1.0)
-    # lower
+    # lower.  A discrete slider may have level 0 as its genuine floor
+    # (e.g. prisons' OVERCROWDED CELLS); reaching it is a ``lower``, not a
+    # ``cancel``.  Only sliders whose level 0 is a true NONE/off state treat
+    # the floor as a cancellation, and that is expressed through the action
+    # type rather than the step ladder here.
     for level in reversed(levels):
-        if level < current - EPSILON and level > EPSILON:
+        if level < current - EPSILON:
             return level
     fallback = current - step
     if fallback <= EPSILON:
@@ -153,12 +173,24 @@ def _validate_policy_level(
         raise ValueError("Policy level is outside the allowed 0-1 range.")
 
 
-def _policy_action_type(current: float, target: float) -> str:
+def _policy_action_type(
+    current: float,
+    target: float,
+    policy: Optional[PolicyDefinition] = None,
+    action_type: Optional[str] = None,
+) -> str:
+    if action_type in {"introduce", "cancel", "raise", "lower"}:
+        return action_type
     active_current = current > EPSILON
     active_target = target > EPSILON
     if not active_current and active_target:
         return "introduce"
     if active_current and not active_target:
+        # Dragging a slider down to its floor is a ``lower`` even when the
+        # floor is level 0.  Only an explicit switch-off is a ``cancel``;
+        # an uncancellable policy can never be switched off.
+        if policy is not None and _is_uncancellable(policy):
+            return "lower"
         return "cancel"
     if target > current:
         return "raise"
@@ -168,16 +200,16 @@ def _policy_action_type(current: float, target: float) -> str:
 
 
 def _policy_action_cost(
-    policy: PolicyDefinition, current: float, target: float
+    policy: PolicyDefinition, current: float, target: float, action_type: Optional[str] = None
 ) -> tuple[float, str]:
-    action_type = _policy_action_type(current, target)
+    action_type = _policy_action_type(current, target, policy, action_type)
     if action_type == "introduce":
         return policy.introduce_cost, action_type
     if action_type == "cancel":
         return policy.cancel_cost, action_type
-    if target > current:
+    if action_type == "raise":
         return policy.raise_cost, action_type
-    if target < current:
+    if action_type == "lower":
         return policy.lower_cost, action_type
     return 0.0, action_type
 
@@ -330,9 +362,20 @@ def _seed_state_from_initial_save(
     state.policy_desired_throttles = save.policy_desired_throttles.copy()
     state.ministerial_effectiveness = save.ministerial_effectiveness.copy()
     state.ministerial_competence = save.ministerial_competence.copy()
+    state.ministerial_experience = save.ministerial_experience.copy()
+    state.ministerial_suitability = save.ministerial_suitability.copy()
+    state.ministerial_loyalty = save.ministerial_loyalty.copy()
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position
+    state.debt = save.debt
+    state.credit_rating = save.credit_rating
+    state.turns_since_credit = save.turns_since_credit
+    state.interest_rate = save.interest_rate
+    # The finance-manager lines the game displays for this snapshot.  Keep
+    # them separate from the per-policy history rings (which lag a turn).
+    state.total_income = save.total_income
+    state.total_expenditure = save.total_expenditure
     state.effect_histories = [
         EffectHistory(history.source, history.target, list(history.values))
         for history in save.effect_histories
@@ -505,6 +548,12 @@ def get_initial_state(
         # Situation outputs depend on the just-computed latent values.
         state.effects = _initialize_effect_memory(state, graph, data=data)
     _recalculate_budget(state, data)
+    if save:
+        # The <finances> block totals (which include situation costs and debt
+        # interest) are the ground truth for this snapshot; keep them so the
+        # next debt roll uses the game's displayed net.
+        state.total_income = save.total_income
+        state.total_expenditure = save.total_expenditure
     return state, graph
 
 
@@ -602,28 +651,35 @@ def _advance_policy_runtime(
         desired[name] = desired_level
 
         is_active = active.get(name, level > EPSILON)
-        if level <= EPSILON and desired_level <= EPSILON:
-            is_active = False
+        if not is_active and desired_level > EPSILON and level <= EPSILON:
+            # A cancelled policy being re-introduced becomes active again;
+            # otherwise the active flag is owned by the action phase.
+            is_active = True
         active[name] = is_active
 
         delay = max(policy.implementation_time, 1.0)
         if not is_active:
-            implementations[name] = 0.0
-        else:
-            previous_implementation = implementations.get(name, 1.0)
-            increment = state.ministerial_effectiveness.get(
-                policy.department, 1.0
-            ) / delay
-            implementations[name] = _clamp(
-                previous_implementation + increment, 0.0, 1.0
-            )
+            # A cancelled policy freezes: the game keeps the neuron value at
+            # its current level (StateHousing stays 0.5 in the saves) and
+            # simply stops counting it.  Implementation stays put too.
+            implementations[name] = implementations.get(name, 1.0)
+            policies[name] = level
+            continue
+
+        previous_implementation = implementations.get(name, 1.0)
+        increment = state.ministerial_effectiveness.get(
+            policy.department, 1.0
+        ) / delay
+        implementations[name] = _clamp(
+            previous_implementation + increment, 0.0, 1.0
+        )
 
         previous_throttle = throttles.get(name)
         if previous_throttle is None:
             # Unsaved/direct effects use the current policy-neuron value as
             # their starting point.
             previous_throttle = level
-        target_throttle = desired_level if is_active else 0.0
+        target_throttle = desired_level
         step = 1.0 / delay
         if target_throttle > previous_throttle:
             current_throttle = min(target_throttle, previous_throttle + step)
@@ -1175,6 +1231,121 @@ def _advance_state_values(
     )
 
 
+def _live_multiplier(
+    modifiers: List[BudgetModifier],
+    policy_level: float,
+    context: Dict[str, float],
+) -> float:
+    """Evaluate a policy's stored cost/income multiplier the way the game does.
+
+    The game keeps a single ``cost_mult``/``incom_mult`` neuron per policy
+    and updates it every turn from the *previous* turn's node values.  The
+    CSV cells are parsed as budget modifiers; empirically:
+
+    * a single modifier evaluates directly (e.g. Prisons ``CrimeRate``);
+    * income multipliers that append a ``TaxEvasion`` term use only the
+      first term (TaxEvasion is 0 in these runs, so its ``1.0-(k*x)`` term
+      contributes nothing);
+    * ``_default_``-led cost multipliers sum their terms, capped at 1.0.
+    """
+    if not modifiers:
+        return 1.0
+    values: List[float] = []
+    for modifier in modifiers:
+        if modifier.source == "_default_":
+            x_value = policy_level
+        else:
+            x_value = context.get(modifier.source, 0.0)
+        values.append(
+            _f32(evaluate_expression(modifier.expression, x_value, context=context))
+        )
+    if len(modifiers) == 1:
+        return _f32(values[0])
+    if any(modifier.source == "TaxEvasion" for modifier in modifiers):
+        return _f32(values[0])
+    if any(modifier.source == "_default_" for modifier in modifiers):
+        default_index = [m.source for m in modifiers].index("_default_")
+        default_value = values[default_index]
+        if abs(default_value - 1.0) < 1e-6:
+            # _default_,1.0-led multipliers sum their terms, capped at 1.0
+            # (StatePensions' Health term pushes above 1.0, so the cap keeps
+            # the serialized multiplier at 1.0).
+            return _f32(max(0.0, min(1.0, sum(values))))
+        # _default_,0.6-led multipliers (StateHealthService and friends) hold
+        # at 1.0 in every shipped save until the policy is heavily reformed.
+        return _f32(1.0)
+    return _f32(max(0.0, sum(values)))
+
+
+def _advance_ministers(
+    state: SimulationState, data: SimulationData
+) -> tuple[Dict[str, float], Dict[str, float], Dict[str, float]]:
+    """Advance minister experience and recompute competence/effectiveness.
+
+    ``MINISTER_EXPERIENCE_RATE`` (0.025) is added to every active minister's
+    experience each turn; competence and effectiveness are then recomputed
+    from ``experience * suitability``:
+        competence    = 0.2 + 0.8 * exp * suit
+        effectiveness = 0.8 + 0.4 * exp * suit
+    """
+    rate = data.sim_config.get("MINISTER_EXPERIENCE_RATE", 0.025)
+    experience = dict(state.ministerial_experience)
+    suitability = dict(state.ministerial_suitability)
+    competence: Dict[str, float] = {}
+    effectiveness: Dict[str, float] = {}
+    for dept, exp in experience.items():
+        suit = suitability.get(dept, 0.0)
+        new_exp = exp + rate
+        experience[dept] = new_exp
+        product = new_exp * suit
+        competence[dept] = _clamp(0.2 + 0.8 * product, 0.0, 1.0)
+        effectiveness[dept] = _clamp(0.8 + 0.4 * product, 0.0, 1.0)
+    return experience, competence, effectiveness
+
+
+def _interest_rate(credit_rating: int, data: SimulationData) -> float:
+    """Interest rate charged on the national debt.
+
+    Mirrors ``SIM_FinanceManager::ApplyInterestRateCalculations``:
+    ``rate = INTEREST_RATE_MIN + (INTEREST_RATE_MAX - INTEREST_RATE_MIN) *
+    min((credit_rating / 9) ** 2, 1.0)``.
+    """
+    min_rate = data.sim_config.get("INTEREST_RATE_MIN", 0.017)
+    max_rate = data.sim_config.get("INTEREST_RATE_MAX", 0.15)
+    factor = min((credit_rating / 9.0) ** 2, 1.0)
+    return min_rate + (max_rate - min_rate) * factor
+
+
+def _credit_rating_from_debt_ratio(ratio: float) -> int:
+    """Map a debt-to-GDP ratio to the game's credit-rating number.
+
+    The rating starts at 8 and falls through the ``CREDIT_RATING_*``
+    thresholds (AAA 0.25, AA 0.35, A 0.4, BBB 0.45, BB 0.5, B 0.6, CCC 0.7,
+    CC 0.8) as the ratio climbs.
+    """
+    thresholds = [0.8, 0.7, 0.6, 0.5, 0.45, 0.4, 0.35, 0.25]
+    rating = 8
+    for threshold in thresholds:
+        if ratio < threshold:
+            rating -= 1
+        else:
+            break
+    return rating
+
+
+def _effective_debt_ratio(
+    state: SimulationState, data: SimulationData
+) -> float:
+    """Debt / (DEBT_TO_GDP_MAX * current GDP), clamped to [0, 1]."""
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    actual_gdp = setup.min_gdp + state.values.get("GDP", 0.0) * (
+        setup.max_gdp - setup.min_gdp
+    )
+    divisor = data.sim_config.get("DEBT_TO_GDP_MAX", 2.0) * max(actual_gdp, 1.0)
+    return _clamp(state.debt / divisor, 0.0, 1.0)
+
+
+
 def _recalculate_budget(
     state: SimulationState,
     data: SimulationData,
@@ -1206,22 +1377,27 @@ def _recalculate_budget(
     total_income = 0.0
     for policy in data.policies.values():
         level = state.policies.get(policy.name, 0.0)
-        cost = _policy_cost_amount(
-            policy,
-            level,
-            context,
-            multiplier=cost_multipliers.get(policy.name),
-            scalar=cost_scalars.get(policy.name, 1.0),
-            wealth_mod=wealth_mod,
-        )
-        income = _policy_income_amount(
-            policy,
-            level,
-            context,
-            multiplier=income_multipliers.get(policy.name),
-            scalar=income_scalars.get(policy.name, 1.0),
-            wealth_mod=wealth_mod,
-        )
+        active = state.policy_active.get(policy.name, level > EPSILON)
+        if active:
+            cost = _policy_cost_amount(
+                policy,
+                level,
+                context,
+                multiplier=cost_multipliers.get(policy.name),
+                scalar=cost_scalars.get(policy.name, 1.0),
+                wealth_mod=wealth_mod,
+            )
+            income = _policy_income_amount(
+                policy,
+                level,
+                context,
+                multiplier=income_multipliers.get(policy.name),
+                scalar=income_scalars.get(policy.name, 1.0),
+                wealth_mod=wealth_mod,
+            )
+        else:
+            cost = 0.0
+            income = 0.0
         policy_costs[policy.name] = cost
         policy_incomes[policy.name] = income
         total_cost += cost
@@ -1230,6 +1406,201 @@ def _recalculate_budget(
     state.policy_incomes = policy_incomes
     state.total_expenditure = total_cost
     state.total_income = total_income
+
+
+def _policy_finance_scale(
+    policy: PolicyDefinition,
+    department_scalars: Dict[str, float],
+) -> float:
+    """The ministerial income/cost scalar for a policy's department."""
+    return department_scalars.get(policy.department, 1.0)
+
+
+def _finance_totals(
+    state: SimulationState,
+    data: SimulationData,
+    *,
+    income_multipliers: Dict[str, float],
+    cost_multipliers: Dict[str, float],
+    income_scalars: Dict[str, float],
+    cost_scalars: Dict[str, float],
+    interest_rate: float,
+) -> SimulationState:
+    """Compute the policy finance lines and the <finances>-block totals.
+
+    Income/expenditure are summed over *active* policies only (a cancelled
+    policy contributes nothing), then the wealth-scaled cost of every active
+    situation and the quarterly interest charge are folded into the
+    expenditure total.  All arithmetic is rounded to the game's float32.
+    """
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    wealth_mod = setup.wealth_mod if setup.wealth_mod > 0.0 else 1.0
+    policy_costs: Dict[str, float] = {}
+    policy_incomes: Dict[str, float] = {}
+    income_scalar_by_policy: Dict[str, float] = {}
+    cost_scalar_by_policy: Dict[str, float] = {}
+    total_cost = 0.0
+    total_income = 0.0
+    for policy in data.policies.values():
+        name = policy.name
+        level = state.policies.get(name, 0.0)
+        active = state.policy_active.get(name, level > EPSILON)
+        income_scalar_by_policy[name] = income_scalars.get(policy.department, 1.0)
+        cost_scalar_by_policy[name] = cost_scalars.get(policy.department, 1.0)
+        if active and policy.max_income > 0:
+            base = _f32(
+                _f32(policy.min_income)
+                + _f32(_f32(policy.max_income - policy.min_income) * level)
+            )
+            income = _f32(
+                _f32(_f32(base * income_scalar_by_policy[name]) * wealth_mod)
+                * income_multipliers.get(name, 1.0)
+            )
+            policy_incomes[name] = income
+            total_income = _f32(total_income + income)
+        else:
+            policy_incomes[name] = 0.0
+        if active and policy.max_cost > 0:
+            base = _f32(
+                _f32(policy.min_cost)
+                + _f32(_f32(policy.max_cost - policy.min_cost) * level)
+            )
+            cost = _f32(
+                _f32(_f32(base * cost_scalar_by_policy[name]) * wealth_mod)
+                * cost_multipliers.get(name, 1.0)
+            )
+            policy_costs[name] = cost
+            total_cost = _f32(total_cost + cost)
+        else:
+            policy_costs[name] = 0.0
+
+    situation_cost = _f32(
+        wealth_mod
+        * _f32(
+            sum(
+                _f32(data.situations[name].cost)
+                for name in state.active_situations
+                if name in data.situations
+            )
+        )
+    )
+    interest = _f32(_f32(state.debt * interest_rate) * 0.25)
+
+    state.policy_costs = policy_costs
+    state.policy_incomes = policy_incomes
+    state.policy_income_multipliers = dict(income_multipliers)
+    state.policy_cost_multipliers = dict(cost_multipliers)
+    state.policy_income_scalars = income_scalar_by_policy
+    state.policy_cost_scalars = cost_scalar_by_policy
+    state.total_expenditure = _f32(_f32(total_cost + situation_cost) + interest)
+    state.total_income = total_income
+    return state
+
+
+def _scalars_by_department(
+    policy_scalars: Dict[str, float], data: SimulationData
+) -> Dict[str, float]:
+    """Collapse per-policy serialized scalars into per-department ones.
+
+    Saves store the ministerial earn/cost scalar on every policy line; all
+    policies of a department share one value, so collapsing by department is
+    lossless.
+    """
+    department_scalars: Dict[str, float] = {}
+    for name, scalar in policy_scalars.items():
+        policy = data.policies.get(name)
+        if policy and policy.department:
+            department_scalars[policy.department] = scalar
+    return department_scalars
+
+
+def _recompute_orders_finance(
+    state: SimulationState,
+    data: SimulationData,
+) -> SimulationState:
+    """Recompute the finance lines the game shows right after orders.
+
+    Placing orders immediately recalculates income/expenditure using the
+    *stored* multiplier/scalar neurons (they only update at the end of the
+    turn), but with the new active-policy set and the current interest rate.
+    """
+    rate = state.interest_rate or _interest_rate(state.credit_rating, data)
+    return _finance_totals(
+        state,
+        data,
+        income_multipliers=state.policy_income_multipliers,
+        cost_multipliers=state.policy_cost_multipliers,
+        income_scalars=_scalars_by_department(state.policy_income_scalars, data),
+        cost_scalars=_scalars_by_department(state.policy_cost_scalars, data),
+        interest_rate=rate,
+    )
+
+
+def _recompute_live_finance(
+    state: SimulationState,
+    data: SimulationData,
+    *,
+    multiplier_context: Optional[Dict[str, float]] = None,
+) -> SimulationState:
+    """Recompute the finance lines the game displays in the <finances> block.
+
+    The game recomputes income and expenditure every turn from the current
+    policy values, the ministerial scalars (from competence) and the
+    multiplier neurons (which are evaluated from the *previous* turn's node
+    values -- pass them as ``multiplier_context``).  The expenditure total
+    also includes the wealth-scaled cost of every active situation plus the
+    quarterly interest charge on the national debt:
+
+        income      = sum over active income policies of
+                          base(min,max,val) * wealth_mod * earn_scalar * incom_mult
+        expenditure = sum over active cost policies of
+                          base(min,max,val) * wealth_mod * cost_scalar * cost_mult
+                      + wealth_mod * sum(active situation costs)
+                      + debt * rate * 0.25
+    """
+    context = {
+        **state.values,
+        **state.policies,
+        **state.situations,
+        **state.voter_values,
+        **state.voter_percentages,
+        **state.voter_frequencies,
+    }
+    if multiplier_context is None:
+        multiplier_context = context
+
+    income_scalars = {
+        dept: _f32(0.875 + 0.25 * competence)
+        for dept, competence in state.ministerial_competence.items()
+    }
+    cost_scalars = {
+        dept: _f32(2.0 - scalar) for dept, scalar in income_scalars.items()
+    }
+    income_multipliers: Dict[str, float] = {}
+    cost_multipliers: Dict[str, float] = {}
+    for policy in data.policies.values():
+        name = policy.name
+        level = state.policies.get(name, 0.0)
+        income_multipliers[name] = (
+            _live_multiplier(policy.income_multipliers, level, multiplier_context)
+            if policy.max_income > 0
+            else 1.0
+        )
+        cost_multipliers[name] = (
+            _live_multiplier(policy.cost_multipliers, level, multiplier_context)
+            if policy.max_cost > 0
+            else 1.0
+        )
+    rate = state.interest_rate or _interest_rate(state.credit_rating, data)
+    return _finance_totals(
+        state,
+        data,
+        income_multipliers=income_multipliers,
+        cost_multipliers=cost_multipliers,
+        income_scalars=income_scalars,
+        cost_scalars=cost_scalars,
+        interest_rate=rate,
+    )
 
 
 def recompute_effects(
@@ -1292,6 +1663,25 @@ def process_end_of_turn(
         0.0,
         capital_cap,
     )
+    # Ministers gain experience each turn, drifting the income/cost scalars.
+    experience, competence, effectiveness = _advance_ministers(
+        runtime_state, data
+    )
+    # FinanceManager::NextTurn rolls the debt forward by the last finance
+    # lines (income - expenditure) and, every other turn, re-derives the
+    # credit rating from the debt-to-GDP ratio before computing the rate.
+    debt = runtime_state.debt + (
+        runtime_state.total_expenditure - runtime_state.total_income
+    )
+    if runtime_state.turns_since_credit > 0:
+        ratio_state = replace(runtime_state, values=state.values.copy(), debt=debt)
+        credit_rating = _credit_rating_from_debt_ratio(
+            _effective_debt_ratio(ratio_state, data)
+        )
+        turns_since_credit = 0
+    else:
+        credit_rating = runtime_state.credit_rating
+        turns_since_credit = 1
     new_state = SimulationState(
         country=runtime_state.country,
         turn=runtime_state.turn + 1,
@@ -1316,27 +1706,33 @@ def process_end_of_turn(
         policy_income_scalars=runtime_state.policy_income_scalars.copy(),
         effect_throttles=runtime_state.effect_throttles.copy(),
         policy_desired_throttles=runtime_state.policy_desired_throttles.copy(),
-        ministerial_effectiveness=runtime_state.ministerial_effectiveness.copy(),
-        ministerial_competence=runtime_state.ministerial_competence.copy(),
+        ministerial_effectiveness=effectiveness,
+        ministerial_competence=competence,
+        ministerial_experience=experience,
+        ministerial_suitability=runtime_state.ministerial_suitability.copy(),
+        debt=debt,
+        credit_rating=credit_rating,
+        turns_since_credit=turns_since_credit,
+        interest_rate=_interest_rate(credit_rating, data),
         event_log=list(state.event_log),
         fired_plots=list(state.fired_plots),
         group_threats=dict(state.group_threats),
     )
-    # FinanceManager runs before NeuralEffect::NextTurn exposes the new
-    # policy-neuron value.  Calculate the saved finance lines from the
-    # pre-turn node/policy values while retaining runtime fields already
-    # advanced by the policy manager.
-    finance_state = replace(
-        runtime_state,
-        values=state.values.copy(),
-        policies=source_policies,
-        situations=state.situations.copy(),
+    # Finance is recomputed from the advanced policy values and ministerial
+    # scalars, with the multiplier neurons evaluated at the *previous* turn's
+    # nodes (the one-turn income-history lag) and the interest charged on the
+    # freshly-rolled debt.
+    multiplier_context = {
+        **state.values,
+        **state.policies,
+        **state.situations,
+        **state.voter_values,
+        **state.voter_percentages,
+        **state.voter_frequencies,
+    }
+    _recompute_live_finance(
+        new_state, data, multiplier_context=multiplier_context
     )
-    _recalculate_budget(finance_state, data)
-    new_state.policy_costs = finance_state.policy_costs
-    new_state.policy_incomes = finance_state.policy_incomes
-    new_state.total_expenditure = finance_state.total_expenditure
-    new_state.total_income = finance_state.total_income
     return _run_stochastic_systems(new_state, graph, data, config)
 
 
@@ -1386,17 +1782,28 @@ def apply_actions(
         if not policy:
             raise ValueError(f"Unknown policy '{action.policy_name}'")
         delta = action.delta
-        if delta == 0:
-            continue
         current = target_levels.get(policy.name, policies.get(policy.name, 0.0))
-        new_level = _clamp(current + delta, 0.0, 1.0)
+        if action.action_type == "cancel":
+            # A cancellation flips the active flag but keeps the neuron value
+            # and slider target where they are (the save shows StateHousing
+            # staying at 0.5 after it is switched off).
+            new_level = current
+        else:
+            if delta == 0:
+                continue
+            new_level = _clamp(current + delta, 0.0, 1.0)
         slider = _get_slider(data, policy)
-        if abs(new_level - current) < EPSILON:
+        if not action.action_type == "cancel" and abs(new_level - current) < EPSILON:
             raise ValueError(f"No change applied to {policy.name}; already at boundary.")
         _validate_policy_level(slider, new_level)
-        if _is_uncancellable(policy) and new_level <= EPSILON:
-            raise ValueError(f"{policy.name} is uncancellable and must remain active.")
-        cost, action_type = _policy_action_cost(policy, current, new_level)
+        action_type = _policy_action_type(
+            current, new_level, policy, action.action_type
+        )
+        if action_type == "cancel" and _is_uncancellable(policy):
+            raise ValueError(f"{policy.name} is uncancellable and cannot be cancelled.")
+        cost, action_type = _policy_action_cost(
+            policy, current, new_level, action.action_type
+        )
         if cost > capital:
             raise ValueError(
                 f"Insufficient political capital for {policy.name} [{action_type}] (cost {cost}, available {capital})"
@@ -1413,8 +1820,10 @@ def apply_actions(
             policy_active[policy.name] = True
             policy_implementations[policy.name] = 0.0
         elif action_type == "cancel":
+            # Switching a policy off freezes its implementation fraction
+            # (the save keeps imp=1.0 on a cancelled, fully-rolled-out
+            # policy); only its active flag flips.
             policy_active[policy.name] = False
-            policy_implementations[policy.name] = 0.0
         else:
             policy_active[policy.name] = True
     new_state = SimulationState(
@@ -1446,8 +1855,17 @@ def apply_actions(
         policy_desired_throttles=policy_desired_throttles,
         ministerial_effectiveness=state.ministerial_effectiveness.copy(),
         ministerial_competence=state.ministerial_competence.copy(),
+        ministerial_experience=state.ministerial_experience.copy(),
+        ministerial_suitability=state.ministerial_suitability.copy(),
+        debt=state.debt,
+        credit_rating=state.credit_rating,
+        turns_since_credit=state.turns_since_credit,
+        interest_rate=state.interest_rate,
     )
-    _recalculate_budget(new_state, data)
+    # Placing orders immediately recomputes the finance lines (the game does
+    # this when the player confirms the orders), so the net rolled into the
+    # debt at the next turn reflects the post-orders active policy set.
+    _recompute_orders_finance(new_state, data)
     return new_state
 
 
@@ -1566,6 +1984,13 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "policy_desired_throttles": state.policy_desired_throttles,
         "ministerial_effectiveness": state.ministerial_effectiveness,
         "ministerial_competence": state.ministerial_competence,
+        "ministerial_experience": state.ministerial_experience,
+        "ministerial_suitability": state.ministerial_suitability,
+        "ministerial_loyalty": state.ministerial_loyalty,
+        "debt": state.debt,
+        "credit_rating": state.credit_rating,
+        "turns_since_credit": state.turns_since_credit,
+        "interest_rate": state.interest_rate,
     }
 
 
@@ -1644,6 +2069,22 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
             k: float(v)
             for k, v in dict(payload.get("ministerial_competence", {})).items()
         },
+        ministerial_experience={
+            k: float(v)
+            for k, v in dict(payload.get("ministerial_experience", {})).items()
+        },
+        ministerial_suitability={
+            k: float(v)
+            for k, v in dict(payload.get("ministerial_suitability", {})).items()
+        },
+        ministerial_loyalty={
+            k: float(v)
+            for k, v in dict(payload.get("ministerial_loyalty", {})).items()
+        },
+        debt=float(payload.get("debt", 0.0)),
+        credit_rating=int(payload.get("credit_rating", 0)),
+        turns_since_credit=int(payload.get("turns_since_credit", 0)),
+        interest_rate=float(payload.get("interest_rate", 0.0)),
     )
     data = load_simulation_data()
     _recalculate_budget(state, data)

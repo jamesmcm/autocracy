@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 
 from autocracy import simulator
-from autocracy.models import PolicyAction
+from autocracy.models import PolicyAction, SimulationState
 from autocracy.savegame import load_state_from_savegame, parse_savegame
 
 SAVES_DIR = Path("parity_cases/dem3saves")
@@ -29,14 +29,44 @@ SAVES_DIR = Path("parity_cases/dem3saves")
 DEFAULT_METRICS = ["GDP", "Health", "Education", "CrimeRate", "Unemployment", "IncomeTax", "SalesTax"]
 
 
-def load_orders(save_path: Path) -> list[PolicyAction]:
+def load_orders(
+    save_path: Path, state: "SimulationState"
+) -> list[PolicyAction]:
     save = parse_savegame(save_path)
     actions = []
     for name in save.policy_desired_throttles:
-        current = save.policies.get(name, 0.0)
+        # The game's orders save the slider *target*; a target that already
+        # matches the current desired throttle is a no-op (the player did not
+        # move that slider this turn).
+        current = state.policy_desired_throttles.get(
+            name, state.policies.get(name, 0.0)
+        )
         target = save.policy_desired_throttles[name]
-        if abs(current - target) > 1e-6:
-            actions.append(PolicyAction(policy_name=name, delta=target - current))
+        # The game distinguishes dragging a slider to its floor (a ``lower``,
+        # policy stays active) from a true switch-off (a ``cancel``, the
+        # policy's active flag flips).  The orders save records the active
+        # flag after the action, so a flip tells us which it was.
+        was_active = state.policy_active.get(name, current > 1e-6)
+        is_active = save.policy_active.get(name, target > 1e-6)
+        if was_active and not is_active:
+            # Cancellation keeps the value/target unchanged, so delta is 0.
+            actions.append(
+                PolicyAction(policy_name=name, delta=0.0, action_type="cancel")
+            )
+            continue
+        if abs(current - target) < 1e-6:
+            continue
+        if not was_active and target > 1e-6:
+            action_type = "introduce"
+        elif target > current:
+            action_type = "raise"
+        else:
+            action_type = "lower"
+        actions.append(
+            PolicyAction(
+                policy_name=name, delta=target - current, action_type=action_type
+            )
+        )
     return actions
 
 
@@ -50,8 +80,8 @@ def main(verbose: bool) -> None:
     state, graph = load_state_from_savegame(initial, data)
     ref = parse_savegame(initial)
 
-    print(f"{'turn':>4} | {'income':>12} {'exp':>12} | {'GDP':>7} {'GS':>5} {'GSact':>5} | income err")
-    print("-" * 80)
+    print(f"{'turn':>4} | {'income':>12} {'exp':>12} | {'GDP':>7} {'GS':>5} {'GSact':>5} | income err | exp err")
+    print("-" * 96)
 
     turns = sorted(
         (Path(p) for p in glob.glob(str(SAVES_DIR / "turn*_orders.xml"))),
@@ -59,7 +89,7 @@ def main(verbose: bool) -> None:
     )
     for orders_path in turns:
         n = turn_number(Path(orders_path))
-        orders = load_orders(Path(orders_path))
+        orders = load_orders(Path(orders_path), state)
         for action in orders:
             try:
                 state = simulator.apply_actions(state, [action], data=data)
@@ -68,27 +98,18 @@ def main(verbose: bool) -> None:
         state = simulator.process_end_of_turn(state, graph, data=data)
 
         # Ground truth: the _initial save for the NEXT turn
-        nxt = SAVES_DIR / f"turn{n}_initial.xml"
-        if not nxt.exists():
-            # orders and initial share a turn number offset; find the matching one
-            candidates = sorted(
-                (Path(p) for p in glob.glob(str(SAVES_DIR / "turn*_initial.xml"))),
-                key=turn_number,
-            )
-            for cand in candidates:
-                if turn_number(Path(cand)) > n:
-                    nxt = Path(cand)
-                    break
+        nxt = SAVES_DIR / f"turn{n + 1}_initial.xml"
         if not nxt.exists():
             continue
         ref = parse_savegame(nxt)
         income_err = state.total_income - ref.total_income
+        exp_err = state.total_expenditure - ref.total_expenditure
         gs = state.situations.get("GeneralStrike", 0.0)
         gs_active = "GeneralStrike" in state.active_situations
         print(
             f"{n:>4} | {state.total_income:>12,.1f} {state.total_expenditure:>12,.1f} | "
             f"{state.values.get('GDP',0):>7.3f} {gs:>5.3f} {str(gs_active):>5} | "
-            f"{income_err:>+10,.1f}"
+            f"{income_err:>+10,.1f} | {exp_err:>+10,.1f}"
         )
 
         if verbose:

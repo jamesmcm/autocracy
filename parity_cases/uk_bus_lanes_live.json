@@ -10,8 +10,8 @@
       "country": "uk",
       "expected": {
         "finance": {
-          "total_expenditure": 259880.389,
-          "total_income": 227899.374
+          "total_expenditure": 277850.65881347656,
+          "total_income": 294733.21875
         },
         "political_capital": 45.0,
         "policies": {
@@ -122,7 +122,7 @@
       "notes": "Captured by launching the installed game under Xvfb, raising Bus Lanes, and saving before and after one turn. The raw saves remain outside this repository; state values are observational because the game has unstored random-system state.",
       "tolerances": {
         "budget": 0.01,
-        "policy_level": 0.000001,
+        "policy_level": 1e-06,
         "state_value": 0.01,
         "stochastic_fields": [
           "simvalues",
