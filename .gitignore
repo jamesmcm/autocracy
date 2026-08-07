@@ -4,5 +4,6 @@ gamedata/data
 !parity_cases/*.json
 gamedata/saves
 *.xml
+!parity_cases/dem3saves/*.xml
 *.lock
 *.pyc
