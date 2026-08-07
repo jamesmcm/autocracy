@@ -178,7 +178,12 @@ the drastic-changes playthrough to within ~130 currency units of income and
   derives it from minister loyalty each turn and it declines over the
   playthrough (26 -> 20), so later-turn PC drifts (turn 3 is off by 1).  The
   full minister-loyalty subsystem (`SIM_Minister::GetPoliticalCapital`,
-  loyalty gain/loss) is not yet modelled.
+  loyalty gain/loss) is not yet modelled.  Calibration note: the serialized
+  per-turn income matches `int(sum over ministers of max(1,
+  POLITICAL_CAPITAL_PER_MINISTER * (loyalty - 0.10)))` (an effective 0.10
+  threshold, one MINISTER_VOTER_BOOST below the config's 0.15
+  MINISTER_RESIGN_THRESHHOLD), so the income formula itself is understood;
+  only the loyalty *dynamics* are missing.
 * **Random systems.**  From turn 4 the ground-truth saves show event/system
   contamination the deterministic sim cannot reproduce: PrivatePrisons is
   introduced (turn 4) and several policies are switched off.  These are
