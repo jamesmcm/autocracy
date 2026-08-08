@@ -368,7 +368,11 @@ def parse_savegame(path: str | Path) -> SaveGame:
                             groups[int(key.strip())] = float(weight.strip())
                         except ValueError:
                             continue
-            voters.append(Voter(groups=groups, value=value))
+            try:
+                inincome = float(voter_elem.findtext("inincome", default="0"))
+            except ValueError:
+                inincome = 0.0
+            voters.append(Voter(groups=groups, value=value, inincome=inincome))
     ministerial_effectiveness: Dict[str, float] = {}
     ministerial_competence: Dict[str, float] = {}
     ministerial_experience: Dict[str, float] = {}
@@ -522,7 +526,7 @@ def state_from_savegame(
         state.voter_frequencies[name] = value
         state.values[name] = value
     state.voters = [
-        Voter(groups=dict(v.groups), value=v.value, income=v.income)
+        Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome)
         for v in save.voters
     ]
     state.policy_implementations = save.policy_implementations.copy()

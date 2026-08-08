@@ -166,6 +166,7 @@ class Voter:
     groups: Dict[int, float] = field(default_factory=dict)
     value: float = 0.0
     income: float = 0.0
+    inincome: float = 0.0
 
 
 @dataclass(slots=True)

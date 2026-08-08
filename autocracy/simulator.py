@@ -351,7 +351,7 @@ def _seed_state_from_initial_save(
         state.voter_frequencies[name] = value
         state.values[name] = value
     state.voters = [
-        Voter(groups=dict(v.groups), value=v.value, income=v.income)
+        Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome)
         for v in save.voters
     ]
     state.policy_implementations = save.policy_implementations.copy()
@@ -1147,16 +1147,26 @@ def _advance_voters_and_income_nodes(
 
     # The voter-type percentages are the population share whose membership
     # in the group exceeds the membership threshold (the game's
-    # CalculatePercentage).  The income groups (Wealthy/Poor/MiddleIncome)
-    # are the three the game assigns from the income bands once the run
-    # starts; each voter sits in one band, so the counts match the game's
-    # serialized percentages (0.252/0.252/0.496).
+    # CalculatePercentage).  The income groups (Wealthy=11 / Poor=12 /
+    # MiddleIncome=13) are assigned from the income bands once the run
+    # starts, so their counts come from the income bands rather than the
+    # static loaded memberships.
     n_voters = len(state.voters)
     if n_voters:
         for symbol, name in VOTER_SYMBOL_NAMES.items():
-            count = sum(
-                1 for voter in state.voters if voter.groups.get(symbol, 0.0) > 0.5
-            )
+            if symbol in INCOME_GROUP_NODES:
+                if symbol == 11:
+                    count = sum(1 for v in state.voters if v.inincome > 0.75)
+                elif symbol == 12:
+                    count = sum(1 for v in state.voters if v.inincome < 0.25)
+                else:
+                    count = sum(
+                        1 for v in state.voters if 0.25 <= v.inincome <= 0.75
+                    )
+            else:
+                count = sum(
+                    1 for voter in state.voters if voter.groups.get(symbol, 0.0) > 0.5
+                )
             state.voter_percentages[f"{name}_perc"] = count / n_voters
 
 
@@ -1989,7 +1999,7 @@ def process_end_of_turn(
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
-        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income) for v in runtime_state.voters],
+        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome) for v in runtime_state.voters],
         policy_implementations=runtime_state.policy_implementations.copy(),
         policy_active=runtime_state.policy_active.copy(),
         policy_cost_multipliers=runtime_state.policy_cost_multipliers.copy(),
@@ -2151,7 +2161,7 @@ def apply_actions(
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
-        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income) for v in state.voters],
+        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome) for v in state.voters],
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=state.policy_cost_multipliers.copy(),
@@ -2288,7 +2298,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "voter_percentages": state.voter_percentages,
         "voter_frequencies": state.voter_frequencies,
         "voters": [
-            {"groups": dict(v.groups), "value": v.value, "income": v.income}
+            {"groups": dict(v.groups), "value": v.value, "income": v.income, "inincome": v.inincome}
             for v in state.voters
         ],
         "policy_implementations": state.policy_implementations,
@@ -2358,6 +2368,7 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
                 groups={int(k): float(w) for k, w in dict(v.get("groups", {})).items()},
                 value=float(v.get("value", 0.0)),
                 income=float(v.get("income", 0.0)),
+                inincome=float(v.get("inincome", 0.0)),
             )
             for v in payload.get("voters", [])
         ],
