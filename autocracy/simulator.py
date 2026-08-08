@@ -628,6 +628,10 @@ def _policy_effect_scale(
     # effect on the simvalue nodes does carry the ministerial scale.
     if (effect.source, effect.target) == ("BorderControls", "Immigration"):
         return implementation
+    # The CitizenshipTests constant applies at full strength even though the
+    # policy is never introduced (see _effect_is_applicable).
+    if (effect.source, effect.target) == ("CitizenshipTests", "Immigration"):
+        return 1.0
     return effectiveness * implementation
 
 
@@ -739,6 +743,11 @@ def _effect_is_applicable(state: SimulationState, effect: Effect) -> bool:
     """
 
     if effect.source not in state.policies:
+        return True
+    # The serialized Immigration value carries the never-introduced
+    # CitizenshipTests constant term (-0.05); the shipped save pair only
+    # constrains this one link, so treat it as always live (unscaled below).
+    if (effect.source, effect.target) == ("CitizenshipTests", "Immigration"):
         return True
     if effect.source in state.policy_active and not state.policy_active[effect.source]:
         return False
