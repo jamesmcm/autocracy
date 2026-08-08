@@ -1328,13 +1328,17 @@ def _minister_satisfaction_target(
         if policy.department != dept or name not in policies:
             continue
         default = defaults.get(name, 0.0)
-        if default <= EPSILON:
-            continue  # policy was never enacted by the mission
+        if default <= EPSILON or policy.max_income <= 0:
+            # Only revenue lines drive minister satisfaction: slashing
+            # CorporationTax/IncomeTax collapses the TAX minister's value,
+            # while spending cuts (StatePensions, Prisons) do not.
+            continue
         deviation += max(0.0, default - policies[name]) * suitability
-    # One over the usual tax-cut magnitude (CorpTax 0.22 + IncomeTax 0.45)
-    # scaled by the TAX minister's suitability.
+    # The game's minister value sits around 0.5-0.6 for a department left at
+    # its defaults and collapses when its revenue lines are cut.
+    base = 0.57
     scale = 1.586
-    return _clamp(1.0 - scale * deviation, 0.0, 1.0)
+    return _clamp(base - scale * deviation, 0.0, 1.0)
 
 
 def _advance_minister_loyalty(

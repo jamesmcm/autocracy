@@ -139,7 +139,25 @@ the drastic-changes playthrough to within ~130 currency units of income and
 |------|-----------|---------|-------------|---------------|
 | 0->1 |     +0.0   |   +0.0  | 27 / 27     | off -> off    |
 | 1->2 |   +133.0   |  -46.0  | 27 / 27     | ON (turn 2)   |
-| 2->3 |     +4.5   |  -53.8  | 26 / 25     | ON            |
+| 2->3 |     +4.5   |  -53.8  | 25 / 25     | ON            |
+
+### Determinism: the game is fully reproducible
+
+The game is **deterministic** for this playthrough: `OPTIONS_RANDOMSTART = 0`
+in the user `config.txt`, so `GRandom::Init(0x9c40, 1)` is called with the
+fixed seed **1** (only `OPTIONS_RANDOMSTART = 1` seeds from the
+`SDL_GetPerformanceCounter` clock).  `srand(1)` then precomputes 40,000
+float32 randoms (`rand() * (1/2^31)`) that every `RandUnitFloat` /
+`RandomChoice` / `IsChance` call consumes in a fixed order.
+
+Every policy change in the orders saves is a *paid player order*: the per-turn
+PC math reconciles exactly (e.g. turn 4 spends 45 = PollutionControls cancel 6
++ PropertyTax raise 19 + PrivatePrisons introduce 20, from a reconstructed
+start-of-turn-4 PC of 50 = 25 + 25 income).  No random event altered any
+policy.  The capital income therefore declines purely from minister loyalty
+(26 -> 20), and the income formula
+`int(SUM max(1, 6 * (loyalty - 0.10)))` reproduces the serialized `<max>/2`
+values exactly.
 
 ### What was implemented
 
@@ -180,14 +198,22 @@ the drastic-changes playthrough to within ~130 currency units of income and
   interpolated by the minister's job suitability, scaled by volatility),
   the per-turn capital income `int(Σ max(1, POLITICAL_CAPITAL_PER_MINISTER
   * (loyalty - 0.10)))`, and a satisfaction model driven by how far the
-  department's policies were cut below their mission defaults.  The TAX
-  minister's loyalty decline matches the game exactly; the satisfaction
-  model for the other ministers is approximate (WELFARE stays high in the
-  game, the approximation drops it), so the late-turn income declines more
-  slowly than the game.  Toggle off to keep the fixed loaded income.
-* **Random systems.**  From turn 4 the ground-truth saves show event/system
-  contamination the deterministic sim cannot reproduce: PrivatePrisons is
-  introduced (turn 4) and several policies are switched off.  These are
-  outside the deterministic parity scope.
+  department's *revenue* lines were cut below their mission defaults (only
+  revenue drives it: slashing CorporationTax/IncomeTax collapses the TAX
+  minister's value, spending cuts do not).  The TAX minister's loyalty
+  decline matches the game exactly and the PC matches turns 1-3 (27, 27,
+  25).  The satisfaction *base* is uniform (0.57) whereas the game's is
+  per-minister (WELFARE sits at ~0.81), so the WELFARE loyalty gains less
+  than the game and the capital income drifts by ~1 on every other turn
+  from turn 4, which cascades into the late-turn order failures.
+  Toggle off to keep the fixed loaded income (which matches turns 1-2 PC
+  exactly but is +1 on turn 3).
+* **Random systems.**  No random event changed a policy in this playthrough
+  (all changes are paid orders), so the deterministic core covers the policy
+  state.  Events/attacks only move voter opinions, which the finance/GDP/PC
+  parity targets do not depend on.  If the voter-parity targets are ever
+  pursued, the game consumes its seed-1 random stream by collecting the
+  events whose value crossed their threshold each turn and picking one with
+  `GRandom::RandomChoice`.
 * **Small node-value drift** (GDP 0.170 vs 0.169 at turn 1, CrimeRate etc.)
   from the situation-latent precision feeds a ~+133 income error at turn 2.
