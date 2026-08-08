@@ -1111,18 +1111,35 @@ def _advance_voters_and_income_nodes(
     income_sums: Dict[int, float] = {}
     income_weights: Dict[int, float] = {}
     for voter in state.voters:
+        # SIM_Voter::UpdateIncome reassigns each voter's income-group
+        # memberships (Wealthy=11 / Poor=12 / MiddleIncome=13) from their
+        # income level: income = f(inincome) and the membership of the
+        # voter's income band is sin((income - boundary)/0.6 * pi).  Each
+        # voter sits in one band, so the other two memberships are zero.
+        income = 1.2 * voter.inincome - 0.1
+        if voter.inincome < 0.25:
+            primary, boundary = 12, -0.3
+        elif voter.inincome <= 0.75:
+            primary, boundary = 13, 0.2
+        else:
+            primary, boundary = 11, 0.7
+        membership = _clamp(
+            math.sin((income - boundary) / 0.6 * math.pi), 0.0, 1.0
+        )
+        for symbol in (11, 12, 13):
+            voter.groups[symbol] = membership if symbol == primary else 0.0
         delta = 0.0
-        for symbol, membership in voter.groups.items():
-            if membership <= 0.0:
+        for symbol, member in voter.groups.items():
+            if member <= 0.0:
                 continue
             name = VOTER_SYMBOL_NAMES.get(symbol)
             if name is None:
                 continue
-            delta += (current.get(name, 0.0) - previous.get(name, 0.0)) * membership
+            delta += (current.get(name, 0.0) - previous.get(name, 0.0)) * member
         voter.value = _clamp(voter.value + delta, -1.0, 1.0)
         if symbol in INCOME_GROUP_NODES:
-            income_sums[symbol] = income_sums.get(symbol, 0.0) + membership * voter.value
-            income_weights[symbol] = income_weights.get(symbol, 0.0) + membership
+            income_sums[symbol] = income_sums.get(symbol, 0.0) + member * voter.value
+            income_weights[symbol] = income_weights.get(symbol, 0.0) + member
 
     for symbol, node_name in INCOME_GROUP_NODES.items():
         weight = income_weights.get(symbol, 0.0)
