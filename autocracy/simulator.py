@@ -1145,6 +1145,20 @@ def _advance_voters_and_income_nodes(
         graph_sum = new_values.get(node_name, 0.0)
         new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
 
+    # The voter-type percentages are the population share whose membership
+    # in the group exceeds the membership threshold (the game's
+    # CalculatePercentage).  The income groups (Wealthy/Poor/MiddleIncome)
+    # are the three the game assigns from the income bands once the run
+    # starts; each voter sits in one band, so the counts match the game's
+    # serialized percentages (0.252/0.252/0.496).
+    n_voters = len(state.voters)
+    if n_voters:
+        for symbol, name in VOTER_SYMBOL_NAMES.items():
+            count = sum(
+                1 for voter in state.voters if voter.groups.get(symbol, 0.0) > 0.5
+            )
+            state.voter_percentages[f"{name}_perc"] = count / n_voters
+
 
 def _advance_state_values(
     state: SimulationState,

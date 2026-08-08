@@ -192,24 +192,49 @@ values exactly.
 
 ### Known remaining gaps
 
-* **The income-group `_` nodes are voter-derived.**  The game computes
-  `_LowIncome`/`_MiddleIncome`/`_HighIncome` through its individual voter
-  population, not the CSV graph sum.  The simulator loads that population
-  and advances each voter's value by the policy + economy-node effect
-  changes, then re-derives the income nodes as the graph sum plus a
-  contribution from the group's voters (with the middle-income node
-  collapsing on the middle-class squeeze, saturating at the game's ~-0.965).
-  With the voter population wired in, `CO2Emissions`/`CarUsage`/`_MiddleIncome`
-  match the game and the final-turn income error is ~+5k (2%).
-* **Voter poll drift.**  The serialized voter-type polls start at their
-  loaded values and drift by the change in the group's incoming effects (a
-  tax cut raises the affected groups' polls); the income/union groups also
-  collapse once inequality spikes.  With that the minister satisfaction
-  (0.5 + average of the two sympathised groups) tracks the game and the
-  per-turn capital income matches **every** turn (26,26,25,25,24,24,23,23,
-  22,21,20) with the political capital matching every orders point.  The
-  exact poll opinion dynamics (complacency/party/sympathy feedback) beyond
-  the effect drift are approximated with the equality-driven collapses.
+A full game-state audit (nodes, situations, ministers, voters, policies,
+finance) across every saved game shows the policy levels, active flags,
+political capital and capital income all match, and the remaining gaps are
+concentrated in the voter population and the node values that feed off it:
+
+* **Node values** (26-30 diffs, mostly < 0.03): Immigration (sim 0.413 vs
+  game 0.385), Wages, Health, PrivateHealthcare, Unemployment,
+  WorkerProductivity, Education, etc.  The Immigration gap comes from the
+  never-introduced policies' constant terms (CitizenshipTests' -0.05 base on
+  Immigration is partially applied in the game) interacting with the node
+  values that feed it; adding the full constants over-corrects.  This drift
+  feeds the ~+5k (2%) final-turn income error via the CO2Emissions/CarUsage
+  multipliers and the ~-1.3k turn-8 error.
+* **Situation latents** (25-31 diffs): the situation values inherit the node
+  drift, though the active sets match at every captured turn.
+* **Voter polls** (18-19 diffs): the loaded polls drift by the effect changes
+  and the equality-driven collapses, but the remaining groups (Conservatives
+  -0.45 vs -0.82, MiddleIncome +0.03 vs -0.01) need the full poll opinion
+  dynamics (complacency/party/sympathy feedback) that the approximation
+  cannot reproduce.
+* **Voter percentages** (2-18 diffs): the income groups (Wealthy/Poor/
+  MiddleIncome) are now computed from the population shares (0.252/0.252/
+  0.496, matching the game from turn 2); the other groups' percentages drift
+  in the game because the individual voters' *memberships* change over the
+  run (the `SIM_Voter::UpdateIncome` income-group reassignment and the
+  party/sympathy membership changes), which the static loaded memberships do
+  not reproduce.  The reference uk1 still shows 0 income-group percentages
+  (the game has not assigned them by then), so the sim is +0.25 there.
+* **Voter frequencies** (7-12 diffs): the `_freq` neurons drift with the
+  voter dynamics; the sim keeps the loaded values.
+* **Minister satisfaction values** (5-10 diffs): these are `0.5 + average` of
+  the two sympathised voter polls, so they inherit the poll drift; the
+  per-turn capital income still matches every turn because the loyalty
+  regions are robust to the small poll differences.
+* **Finance**: income/expenditure within ~2%, debt within ~0.03%, and the
+  income/cost multipliers are re-derived from the (slightly drifted) nodes.
+
+**Precision is not the cause** of the node gaps: testing the node computation
+in full double precision and in float32-rounding throughout changes nothing.
+The residuals come from the game's effect-value details and the voter
+population dynamics (membership/percentage/frequency changes), which are a
+large subsystem beyond the finance/loyalty parity targets.
+
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
   state.  Events/attacks only move voter opinions, which the finance/GDP/PC
@@ -217,14 +242,6 @@ values exactly.
   pursued, the game consumes its seed-1 random stream by collecting the
   events whose value crossed their threshold each turn and picking one with
   `GRandom::RandomChoice`.
-* **Small node-value drift** (GDP 0.170 vs 0.169 at turn 1, CrimeRate etc.)
-  from the situation-latent precision feeds a ~+320 income error at turn 2
-  and a ~-1.3k error at turn 8 with the always-shift effect rings (the
-  serialized rings confirm the game shifts every inertial ring each turn).
-  Precision is not the cause: testing the node computation in full double
-  precision and in float32-rounding throughout changes nothing (the game's
-  SSE float32 vs Python float64 differences are far below the observed
-  node gaps).  The residual comes from the game's effect-value details
   (e.g. Immigration is 0.413 vs the game's 0.385 from the combination of
   the never-introduced CitizenshipTests base term and the node values that
   feed it); the reference saves still reproduce uk1 exactly and uk2 within
