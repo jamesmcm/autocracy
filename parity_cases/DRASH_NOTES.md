@@ -192,28 +192,24 @@ values exactly.
 
 ### Known remaining gaps
 
-* **The income-group `_` nodes are now voter-derived.**  The game computes
+* **The income-group `_` nodes are voter-derived.**  The game computes
   `_LowIncome`/`_MiddleIncome`/`_HighIncome` through its individual voter
-  population (the 2000 voters and their weighted type memberships), not the
-  CSV graph sum.  The simulator now loads that population and:
-  - advances each voter's value by the change in the policy + economy-node
-    effects on its voter types each turn;
-  - re-derives the income-group nodes as the graph sum plus a contribution
-    from the group's voters (dragging the node down when the group
-    collapses, and collapsing `_MiddleIncome` on the middle-class squeeze
-    once Equality drops below ~0.3).
+  population, not the CSV graph sum.  The simulator loads that population
+  and advances each voter's value by the policy + economy-node effect
+  changes, then re-derives the income nodes as the graph sum plus a
+  contribution from the group's voters (with the middle-income node
+  collapsing on the middle-class squeeze, saturating at the game's ~-0.965).
   With the voter population wired in, `CO2Emissions`/`CarUsage`/`_MiddleIncome`
-  match the game and the final-turn income error falls to ~+2.8k with
-  expenditure ~-400.
-* **Minister satisfaction stays on the loaded voter values.**  The minister
-  satisfaction is `0.5 + average(sym1/sym2 voter-group values)`, and the
-  loyalty gain/drop thresholds interpolate by the minister's experience.  The
-  voter *poll* values the game serializes drift over the run (TradeUnionist
-  -0.26 -> -0.50 while Farmers stays ~+0.32); the simulator keeps the loaded
-  values, so the last two turns' capital income overshoots by 1 (PC +4 at the
-  final turn).  Reproducing the poll drift needs the full voter opinion
-  dynamics (complacency/party/sympathy), which are separate from the
-  income-node derivation.
+  match the game and the final-turn income error is ~+5k (2%).
+* **Voter poll drift.**  The serialized voter-type polls start at their
+  loaded values and drift by the change in the group's incoming effects (a
+  tax cut raises the affected groups' polls); the income/union groups also
+  collapse once inequality spikes.  With that the minister satisfaction
+  (0.5 + average of the two sympathised groups) tracks the game and the
+  per-turn capital income matches **every** turn (26,26,25,25,24,24,23,23,
+  22,21,20) with the political capital matching every orders point.  The
+  exact poll opinion dynamics (complacency/party/sympathy feedback) beyond
+  the effect drift are approximated with the equality-driven collapses.
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
   state.  Events/attacks only move voter opinions, which the finance/GDP/PC
@@ -223,5 +219,5 @@ values exactly.
   `GRandom::RandomChoice`.
 * **Small node-value drift** (GDP 0.170 vs 0.169 at turn 1, CrimeRate etc.)
   from the situation-latent precision feeds a ~+320 income error at turn 2
-  with the always-shift effect rings (the serialized rings confirm the game
-  shifts every inertial ring each turn).
+  and a ~-1.3k error at turn 8 with the always-shift effect rings (the
+  serialized rings confirm the game shifts every inertial ring each turn).
