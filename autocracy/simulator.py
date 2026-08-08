@@ -1099,7 +1099,7 @@ def _advance_voters_and_income_nodes(
     for name, slope, threshold in (
         ("MiddleIncome", 6.3, 0.3),
         ("Capitalist", 6.4, 0.3),
-        ("TradeUnionist", 30.0, 0.1),
+        ("TradeUnionist", 1.2, 0.1),
     ):
         if name in state.voter_values:
             state.voter_values[name] = _clamp(
