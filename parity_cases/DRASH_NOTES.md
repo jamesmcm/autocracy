@@ -192,22 +192,26 @@ values exactly.
 
 ### Known remaining gaps
 
-* **Political-capital income** derives from minister loyalty each turn in the
-  game.  A `SimulationConfig.minister_loyalty` toggle now implements the
-  subsystem: `SIM_Minister::ProcessLoyalty` (gain/drop thresholds
-  interpolated by the minister's job suitability, scaled by volatility),
-  the per-turn capital income `int(Σ max(1, POLITICAL_CAPITAL_PER_MINISTER
-  * (loyalty - 0.10)))`, and a satisfaction model driven by how far the
-  department's *revenue* lines were cut below their mission defaults (only
-  revenue drives it: slashing CorporationTax/IncomeTax collapses the TAX
-  minister's value, spending cuts do not).  The TAX minister's loyalty
-  decline matches the game exactly and the PC matches turns 1-3 (27, 27,
-  25).  The satisfaction *base* is uniform (0.57) whereas the game's is
-  per-minister (WELFARE sits at ~0.81), so the WELFARE loyalty gains less
-  than the game and the capital income drifts by ~1 on every other turn
-  from turn 4, which cascades into the late-turn order failures.
-  Toggle off to keep the fixed loaded income (which matches turns 1-2 PC
-  exactly but is +1 on turn 3).
+* **The `_`-prefixed "effective income" nodes are voter-derived.**  The
+  game's voter system computes each voter group's economic status (e.g.
+  `_MiddleIncome`, `_LowIncome`, `_HighIncome`) through its individual
+  `SIM_Voter`s; the sim instead evaluates the CSV graph sum for those nodes.
+  The two agree for the first turns (where the voter system is calm) but
+  diverge once the economy crashes: at the final turn the game's
+  `_MiddleIncome` sits at -0.97 while the graph sum is only -0.37.  Because
+  `_MiddleIncome` feeds `CarUsage`/`AirTravel` (and via them `CO2Emissions`
+  and the CarTax/PetrolTax/CarbonTax income multipliers), this residual
+  shows up as ~+28k income / ~-1k expenditure error on the final turn and a
+  +4 political-capital overshoot on turns 10-11.  Matching it needs the
+  voter population simulation (parties, memberships, income groups), which
+  is a large subsystem beyond the finance/loyalty parity targets.
+* **Minister satisfaction is the average of the sympathised voters.**  The
+  minister's `value` is `0.5 + average(sym1/sym2 voter group values)`, and
+  the loyalty gain/drop thresholds interpolate by the minister's experience
+  (not job suitability).  With that, every minister's loyalty and the
+  per-turn political capital match the game exactly for turns 0-9
+  (1,1,0,5,3,27,10,7,29), and the capital income matches turns 1-9.  The
+  loaded (toggle-off) income is exact for turns 1-2.
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
   state.  Events/attacks only move voter opinions, which the finance/GDP/PC
@@ -216,4 +220,6 @@ values exactly.
   events whose value crossed their threshold each turn and picking one with
   `GRandom::RandomChoice`.
 * **Small node-value drift** (GDP 0.170 vs 0.169 at turn 1, CrimeRate etc.)
-  from the situation-latent precision feeds a ~+133 income error at turn 2.
+  from the situation-latent precision feeds a ~+320 income error at turn 2
+  with the always-shift effect rings (the serialized rings confirm the game
+  shifts every inertial ring each turn).

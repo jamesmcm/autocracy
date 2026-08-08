@@ -97,7 +97,7 @@ Common behavioural patterns handled correctly:
 3. **End of Turn** (`process_end_of_turn`):
    - Advance policy runtime first: implementation fractions increase by minister effectiveness divided by implementation time, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
    - Advance the effect vector using the pre-turn policy values as source snapshots. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. Saved rings contain raw samples, not minister-scaled live values.
-     The executable only writes a fresh ring sample for simvalue and situation sources (situations while active) every turn; a settled policy's ring keeps its older samples, which is why serialized policy rings still hold values from earlier, lower slider levels. The simulator mirrors that rule: policy rings advance only while the policy is moving toward its target or still rolling out.
+      The executable writes a fresh ring sample for every applicable inertial link each turn — including a settled policy (a lowered IncomeTax keeps shifting 0-samples, a raised TobaccoTax keeps shifting −0.8 samples until the leading-window average converges). The simulator mirrors that rule and uses the pre-turn policy snapshot for the one-turn-lagged sample.
    - One parity calibration is applied to `BorderControls -> Immigration`: the shipped save pair implies that link is *not* ministerially scaled (its implied contribution is the raw −0.4 ring value). Every other policy effect on the simvalue nodes does carry the ministerial scale.
    - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
    - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
@@ -106,7 +106,10 @@ Common behavioural patterns handled correctly:
       `SimulationConfig.minister_loyalty` flag is enabled the accrual is
       re-derived each turn from the ministers' loyalty (which itself drifts
       through `SIM_Minister::ProcessLoyalty` as ministers gain/lose loyalty
-      based on their satisfaction with the enacted policies); otherwise the
+      based on their satisfaction with the enacted policies — a minister's
+      satisfaction is `0.5 + average` of the two voter groups they
+      sympathise with, and the gain/drop thresholds interpolate by the
+      minister's experience); otherwise the
       accrual stays at the value loaded from the save.
     - Recompute the finance lines from the advanced policy values and the
       advanced ministerial scalars, with the multiplier neurons evaluated at
