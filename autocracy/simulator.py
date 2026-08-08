@@ -1397,6 +1397,7 @@ def _advance_state_values(
             for definition in data.situations.values()
             for effect in definition.effects
             if effect.target == node_name
+            and node_name not in INCOME_GROUP_NODES.values()
         )
         return total
 
