@@ -212,14 +212,15 @@ concentrated in the voter population and the node values that feed off it:
   -0.45 vs -0.82, MiddleIncome +0.03 vs -0.01) need the full poll opinion
   dynamics (complacency/party/sympathy feedback) that the approximation
   cannot reproduce.
-* **Voter percentages** (2-18 diffs): the income groups (Wealthy/Poor/
-  MiddleIncome) are now computed from the population shares (0.252/0.252/
-  0.496, matching the game from turn 2); the other groups' percentages drift
-  in the game because the individual voters' *memberships* change over the
-  run (the `SIM_Voter::UpdateIncome` income-group reassignment and the
-  party/sympathy membership changes), which the static loaded memberships do
-  not reproduce.  The reference uk1 still shows 0 income-group percentages
-  (the game has not assigned them by then), so the sim is +0.25 there.
+* **Voter percentages** (13-15 diffs): the income groups (Wealthy/Poor/
+  MiddleIncome) are now exact — each voter is placed in their income band
+  (inincome < 0.25 / 0.25-0.75 / > 0.75) with the band membership set to
+  `sin((income - boundary)/0.6·π)` (income = 1.2·inincome - 0.1), matching
+  the game's serialized percentages (0.252/0.252/0.496) and the voters'
+  reassigned income-group memberships 2000/2000.  The *other* groups'
+  percentages still drift in the game because the individual voters'
+  memberships change over the run (the party/sympathy membership changes),
+  which the static loaded memberships do not reproduce.
 * **Voter frequencies** (7-12 diffs): the `_freq` neurons drift with the
   voter dynamics; the sim keeps the loaded values.
 * **Minister satisfaction values** (5-10 diffs): these are `0.5 + average` of
