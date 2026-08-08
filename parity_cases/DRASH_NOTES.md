@@ -221,3 +221,11 @@ values exactly.
   from the situation-latent precision feeds a ~+320 income error at turn 2
   and a ~-1.3k error at turn 8 with the always-shift effect rings (the
   serialized rings confirm the game shifts every inertial ring each turn).
+  Precision is not the cause: testing the node computation in full double
+  precision and in float32-rounding throughout changes nothing (the game's
+  SSE float32 vs Python float64 differences are far below the observed
+  node gaps).  The residual comes from the game's effect-value details
+  (e.g. Immigration is 0.413 vs the game's 0.385 from the combination of
+  the never-introduced CitizenshipTests base term and the node values that
+  feed it); the reference saves still reproduce uk1 exactly and uk2 within
+  0.3%.
