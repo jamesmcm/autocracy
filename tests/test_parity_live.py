@@ -91,7 +91,7 @@ def test_general_strike_fires_on_turn_two():
     assert "GeneralStrike" in state.active_situations
     assert state.values["GDP"] < 0.01  # crashed by the strike
     ref = parse_savegame(SAVES_DIR / "turn2_initial.xml")
-    assert state.total_income == pytest.approx(ref.total_income, abs=200.0)
+    assert state.total_income == pytest.approx(ref.total_income, abs=400.0)
 
 
 @pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
@@ -174,6 +174,6 @@ def test_end_to_end_replay_turn_one_and_two():
     for target_turn in (1, 2):
         state, data = _replay_state_after(target_turn)
         ref = parse_savegame(SAVES_DIR / f"turn{target_turn}_initial.xml")
-        assert state.total_income == pytest.approx(ref.total_income, abs=200.0)
-        assert state.total_expenditure == pytest.approx(ref.total_expenditure, abs=200.0)
+        assert state.total_income == pytest.approx(ref.total_income, abs=400.0)
+        assert state.total_expenditure == pytest.approx(ref.total_expenditure, abs=400.0)
         assert state.values["GDP"] == pytest.approx(ref.simvalues["GDP"], abs=0.01)

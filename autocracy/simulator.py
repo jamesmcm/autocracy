@@ -715,10 +715,12 @@ def _effect_source_value(
 ) -> float:
     """Return an effect's x value, suppressing inactive policy effects."""
 
-    if effect.source in state.policies and state.policies[effect.source] <= EPSILON:
-        return 0.0
+    # The pre-turn policy snapshot (used for the one-turn-lagged ring samples)
+    # takes precedence over the already-advanced live policy values.
     if policy_values is not None and effect.source in policy_values:
         return policy_values[effect.source]
+    if effect.source in state.policies and state.policies[effect.source] <= EPSILON:
+        return 0.0
     return _source_throttle(state, effect.source, context=context)
 
 
@@ -733,8 +735,6 @@ def _effect_is_applicable(state: SimulationState, effect: Effect) -> bool:
 
     if effect.source not in state.policies:
         return True
-    if state.policies[effect.source] <= EPSILON:
-        return False
     if effect.source in state.policy_active and not state.policy_active[effect.source]:
         return False
     implementation = state.policy_implementations.get(effect.source)
@@ -1104,19 +1104,13 @@ def _advance_state_values(
     # level.  A policy ring only advances while the policy is moving toward
     # its target or still rolling out.
     def should_shift(effect: Effect) -> bool:
+        # The game writes a fresh sample into every applicable inertial ring
+        # every turn (the serialized rings confirm the IncomeTax lowering
+        # shifts 0-samples for several turns and the TobaccoTax raise shifts
+        # -0.8s); the ring's current value is the leading-window average.
         source = effect.source
         if source in data.situations:
             return source in active_situations
-        if source in data.policies:
-            level = state.policies.get(source, 0.0)
-            target = state.policy_desired_throttles.get(source, level)
-            implementation = state.policy_implementations.get(source, 1.0)
-            if abs(level - target) > EPSILON or implementation < 1.0 - EPSILON:
-                return True
-            history = history_by_id.get(effect.effect_id)
-            # A fresh simulation starts with zero-filled rings; let the first
-            # turns populate them instead of freezing policy effects at zero.
-            return history is not None and not any(history.values)
         return True
 
     pre_policy_values = source_policies or state.policies
@@ -1195,7 +1189,7 @@ def _advance_state_values(
             continue
         context = {**new_values, **state.policies, **state.situations}
         new_values[node.name] = _clamp(
-            node.default + incoming_value(node.name),
+            _f32(node.default + incoming_value(node.name)),
             node.minimum,
             node.maximum,
         )
@@ -1953,6 +1947,11 @@ def apply_actions(
         if policy.name not in effect_throttles:
             effect_throttles[policy.name] = current
         if action_type == "introduce":
+            # A newly-introduced policy takes its slider level as its current
+            # value immediately (the save shows the introduced CarbonTax at
+            # its target with implementation 0); the implementation fraction
+            # then ramps up.
+            policies[policy.name] = new_level
             policy_active[policy.name] = True
             policy_implementations[policy.name] = 0.0
         elif action_type == "cancel":
