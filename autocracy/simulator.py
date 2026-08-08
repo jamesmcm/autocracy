@@ -1266,6 +1266,19 @@ def _advance_state_values(
         if not effect.effect_id:
             return
         if not is_applicable(effect):
+            # Mirror the first pass: the cancelled policy's inertial ring
+            # still contributes its (decaying) window average.
+            if effect.inertia:
+                history = history_by_id.get(effect.effect_id)
+                if history is not None:
+                    window = max(1, int(effect.inertia))
+                    current_value = sum(history.values[:window]) / window
+                    new_effects[effect.effect_id] = _clamp(
+                        current_value * _policy_effect_scale(state, effect, data),
+                        -1.0,
+                        1.0,
+                    )
+                    return
             new_effects[effect.effect_id] = 0.0
             return
         raw_value = evaluate_expression(
@@ -1312,6 +1325,22 @@ def _advance_state_values(
         if not effect.effect_id:
             continue
         if not is_applicable(effect):
+            # A cancelled policy's inertial ring keeps shifting 0-samples
+            # (the disabled policy's output is 0), so its contribution
+            # decays toward zero rather than vanishing immediately; the
+            # serialized StateHousing->PrivateHousing ring confirms this.
+            if effect.inertia and history_by_id.get(effect.effect_id) is not None:
+                history = history_by_id[effect.effect_id]
+                previous_values = list(history.values)
+                history.values = [0.0] + history.values[:-1]
+                window = max(1, int(effect.inertia))
+                current_value = sum(previous_values[:window]) / window
+                new_effects[effect.effect_id] = _clamp(
+                    current_value * _policy_effect_scale(state, effect, data),
+                    -1.0,
+                    1.0,
+                )
+                continue
             new_effects[effect.effect_id] = 0.0
             continue
         raw_value = evaluate_expression(
