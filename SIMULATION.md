@@ -102,7 +102,12 @@ Common behavioural patterns handled correctly:
    - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
    - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
     - Add the active-minister political-capital accrual and clamp at the
-      corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.
+      corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.  When the
+      `SimulationConfig.minister_loyalty` flag is enabled the accrual is
+      re-derived each turn from the ministers' loyalty (which itself drifts
+      through `SIM_Minister::ProcessLoyalty` as ministers gain/lose loyalty
+      based on their satisfaction with the enacted policies); otherwise the
+      accrual stays at the value loaded from the save.
     - Recompute the finance lines from the advanced policy values and the
       advanced ministerial scalars, with the multiplier neurons evaluated at
       the previous turn's nodes and the debt interest charged on the

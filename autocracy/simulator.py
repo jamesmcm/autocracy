@@ -365,6 +365,8 @@ def _seed_state_from_initial_save(
     state.ministerial_experience = save.ministerial_experience.copy()
     state.ministerial_suitability = save.ministerial_suitability.copy()
     state.ministerial_loyalty = save.ministerial_loyalty.copy()
+    state.ministerial_volatility = save.ministerial_volatility.copy()
+    state.ministerial_value = save.ministerial_value.copy()
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position
@@ -1303,6 +1305,118 @@ def _advance_ministers(
     return experience, competence, effectiveness
 
 
+def _minister_satisfaction_target(
+    country: str,
+    policies: Dict[str, float],
+    data: SimulationData,
+    dept: str,
+    suitability: float,
+) -> float:
+    """The minister's satisfaction target from the enacted policies.
+
+    The game computes each minister's ``value`` (satisfaction) through its
+    voter/neural system; here it is approximated from how far the
+    department's own policies have been cut below their mission defaults,
+    scaled by the minister's suitability for the job.  A department whose
+    big lines were slashed (CorporationTax/IncomeTax to 0) yields a low
+    target, which drives loyalty down via ``ProcessLoyalty``.
+    """
+    setup = data_loader.load_country_setup(data.gamedata_root, country)
+    defaults = setup.policy_levels
+    deviation = 0.0
+    for name, policy in data.policies.items():
+        if policy.department != dept or name not in policies:
+            continue
+        default = defaults.get(name, 0.0)
+        if default <= EPSILON:
+            continue  # policy was never enacted by the mission
+        deviation += max(0.0, default - policies[name]) * suitability
+    # One over the usual tax-cut magnitude (CorpTax 0.22 + IncomeTax 0.45)
+    # scaled by the TAX minister's suitability.
+    scale = 1.586
+    return _clamp(1.0 - scale * deviation, 0.0, 1.0)
+
+
+def _advance_minister_loyalty(
+    state: SimulationState, data: SimulationData
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Advance each minister's satisfaction and loyalty one turn.
+
+    Mirrors ``SIM_Minister::NextTurn`` -> ``ProcessLoyalty``.  The loyalty
+    change uses the satisfaction already stored on the state (the value from
+    the *previous* turn, matching the game's one-turn lag); the satisfaction
+    is then recomputed against the newly-advanced policies:
+        gain:      loyalty += volatility * MINISTER_LOYALTY_GAINRATE
+        neutral:   loyalty -= mission_factor * MINISTER_INEVITABLE_DISLOYALTY_OVER_TIME
+        unhappy:   loyalty -= volatility * MINISTER_LOYALTY_DROP_RATE
+    ``mission_factor = 0.5 * mission_difficulty + 0.75``.
+    """
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    mission_factor = 0.5 * setup.difficulty + 0.75
+
+    gain_max = data.sim_config.get("MINISTER_LOYALTY_GAIN_THRESHHOLD_MAX", 0.85)
+    gain_min = data.sim_config.get("MINISTER_LOYALTY_GAIN_THRESHHOLD_MIN", 0.65)
+    drop_max = data.sim_config.get("MINISTER_LOYALTY_DROP_THRESHHOLD_MAX", 0.55)
+    drop_min = data.sim_config.get("MINISTER_LOYALTY_DROP_THRESHHOLD_MIN", 0.45)
+    gain_rate = data.sim_config.get("MINISTER_LOYALTY_GAINRATE", 0.02)
+    drop_rate = data.sim_config.get("MINISTER_LOYALTY_DROP_RATE", 0.06)
+    inevitable = data.sim_config.get("MINISTER_INEVITABLE_DISLOYALTY_OVER_TIME", 0.015)
+
+    values = dict(state.ministerial_value)
+    loyalties = dict(state.ministerial_loyalty)
+    for dept in list(loyalties):
+        suitability = state.ministerial_suitability.get(dept, 0.5)
+        volatility = state.ministerial_volatility.get(dept, 0.5)
+        current_value = values.get(dept, 0.5)
+
+        gain_threshold = (gain_max - gain_min) * suitability + gain_min
+        drop_threshold = (drop_max - drop_min) * suitability + drop_min
+        loyalty = loyalties[dept]
+        if current_value > gain_threshold:
+            loyalty += volatility * gain_rate
+        else:
+            loyalty -= mission_factor * inevitable * volatility
+            if current_value < drop_threshold:
+                # Very unhappy ministers (value below the drop threshold)
+                # lose loyalty at the full drop rate on top of the
+                # inevitable drift.
+                loyalty -= volatility * drop_rate
+        loyalties[dept] = _clamp(loyalty, 0.0, 1.0)
+
+        # The satisfaction for the *next* turn is derived from the newly
+        # advanced policies.
+        values[dept] = _clamp(
+            _minister_satisfaction_target(
+                state.country, state.policies, data, dept, suitability
+            ),
+            0.0,
+            1.0,
+        )
+    return values, loyalties
+
+
+def _capital_income(
+    state: SimulationState, data: SimulationData
+) -> float:
+    """Per-turn political-capital income from the active ministers.
+
+    Mirrors ``SIM_PoliticalCapital::CalcNewPoints``: every minister with a
+    portfolio contributes ``max(1, POLITICAL_CAPITAL_PER_MINISTER *
+    (loyalty - threshold))``.  Empirically the serialized incomes match a
+    threshold one MINISTER_VOTER_BOOST below the config's
+    MINISTER_RESIGN_THRESHHOLD (0.10 vs 0.15); the total is truncated like
+    the game's ``cvttss2si``.
+    """
+    per_minister = data.sim_config.get("POLITICAL_CAPITAL_PER_MINISTER", 6.0)
+    threshold = data.sim_config.get("MINISTER_RESIGN_THRESHHOLD", 0.15) - data.sim_config.get(
+        "MINISTER_VOTER_BOOST", 0.05
+    )
+    total = 0.0
+    for loyalty in state.ministerial_loyalty.values():
+        total += max(1.0, per_minister * (loyalty - threshold))
+    return float(int(total))
+
+
 def _interest_rate(credit_rating: int, data: SimulationData) -> float:
     """Interest rate charged on the national debt.
 
@@ -1652,20 +1766,33 @@ def process_end_of_turn(
         data,
         source_policies=source_policies,
     )
+    # Ministers gain experience each turn (drifting the income/cost scalars)
+    # and -- when the loyalty subsystem is enabled -- their satisfaction and
+    # loyalty advance, which drives the per-turn political-capital income.
+    experience, competence, effectiveness = _advance_ministers(
+        runtime_state, data
+    )
+    ministerial_value = runtime_state.ministerial_value.copy()
+    ministerial_loyalty = runtime_state.ministerial_loyalty.copy()
+    if config is not None and config.minister_loyalty:
+        ministerial_value, ministerial_loyalty = _advance_minister_loyalty(
+            runtime_state, data
+        )
     capital_per_minister = data.sim_config.get("POLITICAL_CAPITAL_PER_MINISTER", 6.0)
     max_multiplier = data.sim_config.get("POLITICAL_CAPITAL_MAX_MULTIPLIER", 2.0)
-    capital_income = (
-        runtime_state.political_capital_income or capital_per_minister * 5
-    )
+    if config is not None and config.minister_loyalty:
+        capital_income = _capital_income(
+            replace(runtime_state, ministerial_loyalty=ministerial_loyalty), data
+        )
+    else:
+        capital_income = (
+            runtime_state.political_capital_income or capital_per_minister * 5
+        )
     capital_cap = capital_income * max_multiplier
     new_capital = _clamp(
         runtime_state.political_capital + capital_income,
         0.0,
         capital_cap,
-    )
-    # Ministers gain experience each turn, drifting the income/cost scalars.
-    experience, competence, effectiveness = _advance_ministers(
-        runtime_state, data
     )
     # FinanceManager::NextTurn rolls the debt forward by the last finance
     # lines (income - expenditure) and, every other turn, re-derives the
@@ -1710,6 +1837,9 @@ def process_end_of_turn(
         ministerial_competence=competence,
         ministerial_experience=experience,
         ministerial_suitability=runtime_state.ministerial_suitability.copy(),
+        ministerial_loyalty=ministerial_loyalty,
+        ministerial_volatility=runtime_state.ministerial_volatility.copy(),
+        ministerial_value=ministerial_value,
         debt=debt,
         credit_rating=credit_rating,
         turns_since_credit=turns_since_credit,
@@ -1857,6 +1987,9 @@ def apply_actions(
         ministerial_competence=state.ministerial_competence.copy(),
         ministerial_experience=state.ministerial_experience.copy(),
         ministerial_suitability=state.ministerial_suitability.copy(),
+        ministerial_loyalty=state.ministerial_loyalty.copy(),
+        ministerial_volatility=state.ministerial_volatility.copy(),
+        ministerial_value=state.ministerial_value.copy(),
         debt=state.debt,
         credit_rating=state.credit_rating,
         turns_since_credit=state.turns_since_credit,
@@ -1987,6 +2120,8 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "ministerial_experience": state.ministerial_experience,
         "ministerial_suitability": state.ministerial_suitability,
         "ministerial_loyalty": state.ministerial_loyalty,
+        "ministerial_volatility": state.ministerial_volatility,
+        "ministerial_value": state.ministerial_value,
         "debt": state.debt,
         "credit_rating": state.credit_rating,
         "turns_since_credit": state.turns_since_credit,
@@ -2080,6 +2215,14 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         ministerial_loyalty={
             k: float(v)
             for k, v in dict(payload.get("ministerial_loyalty", {})).items()
+        },
+        ministerial_volatility={
+            k: float(v)
+            for k, v in dict(payload.get("ministerial_volatility", {})).items()
+        },
+        ministerial_value={
+            k: float(v)
+            for k, v in dict(payload.get("ministerial_value", {})).items()
         },
         debt=float(payload.get("debt", 0.0)),
         credit_rating=int(payload.get("credit_rating", 0)),

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from autocracy import simulator
-from autocracy.models import PolicyAction
+from autocracy.models import PolicyAction, SimulationConfig
 from autocracy.savegame import load_state_from_savegame, parse_savegame
 
 SAVES_DIR = Path("parity_cases/dem3saves")
@@ -142,6 +142,31 @@ def _replay_state_after(n: int):
             state = _apply_orders(state, graph, data, turn)
         state = simulator.process_end_of_turn(state, graph, data)
     return state, data
+
+
+@pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
+def test_minister_loyalty_tracks_game_when_enabled():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(SAVES_DIR / "turn0_initial.xml", data)
+    cfg = SimulationConfig(minister_loyalty=True)
+    for n in (0, 1):
+        state = _apply_orders(state, graph, data, n)
+        state = simulator.process_end_of_turn(state, graph, data, config=cfg)
+        ref = parse_savegame(SAVES_DIR / f"turn{n + 1}_initial.xml")
+        assert state.ministerial_loyalty["TAX"] == pytest.approx(
+            ref.ministerial_loyalty["TAX"], abs=1e-3
+        )
+        assert state.political_capital == pytest.approx(ref.political_capital, abs=1.0)
+
+
+@pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
+def test_minister_loyalty_disabled_keeps_loaded_income():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(SAVES_DIR / "turn0_initial.xml", data)
+    state = _apply_orders(state, graph, data, 0)
+    state = simulator.process_end_of_turn(state, graph, data, config=SimulationConfig())
+    assert state.political_capital_income == pytest.approx(26.0)
+    assert state.ministerial_loyalty["TAX"] == pytest.approx(0.70310652)
 
 
 @pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")

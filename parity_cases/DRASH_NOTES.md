@@ -174,16 +174,17 @@ the drastic-changes playthrough to within ~130 currency units of income and
 
 ### Known remaining gaps
 
-* **Political-capital income** stays at the loaded value (26).  The game
-  derives it from minister loyalty each turn and it declines over the
-  playthrough (26 -> 20), so later-turn PC drifts (turn 3 is off by 1).  The
-  full minister-loyalty subsystem (`SIM_Minister::GetPoliticalCapital`,
-  loyalty gain/loss) is not yet modelled.  Calibration note: the serialized
-  per-turn income matches `int(sum over ministers of max(1,
-  POLITICAL_CAPITAL_PER_MINISTER * (loyalty - 0.10)))` (an effective 0.10
-  threshold, one MINISTER_VOTER_BOOST below the config's 0.15
-  MINISTER_RESIGN_THRESHHOLD), so the income formula itself is understood;
-  only the loyalty *dynamics* are missing.
+* **Political-capital income** derives from minister loyalty each turn in the
+  game.  A `SimulationConfig.minister_loyalty` toggle now implements the
+  subsystem: `SIM_Minister::ProcessLoyalty` (gain/drop thresholds
+  interpolated by the minister's job suitability, scaled by volatility),
+  the per-turn capital income `int(Σ max(1, POLITICAL_CAPITAL_PER_MINISTER
+  * (loyalty - 0.10)))`, and a satisfaction model driven by how far the
+  department's policies were cut below their mission defaults.  The TAX
+  minister's loyalty decline matches the game exactly; the satisfaction
+  model for the other ministers is approximate (WELFARE stays high in the
+  game, the approximation drops it), so the late-turn income declines more
+  slowly than the game.  Toggle off to keep the fixed loaded income.
 * **Random systems.**  From turn 4 the ground-truth saves show event/system
   contamination the deterministic sim cannot reproduce: PrivatePrisons is
   introduced (turn 4) and several policies are switched off.  These are

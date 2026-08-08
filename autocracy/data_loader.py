@@ -409,6 +409,7 @@ def load_country_setup(root: Path, country: str) -> CountrySetup:
         overrides=overrides,
         economic_cycle_start=_safe_float(config_data.get("economic_cycle_start", "0")),
         wealth_mod=_safe_float(config_data.get("wealth_mod", "1"), default=1.0),
+        difficulty=_safe_float(config_data.get("difficulty", "0.5"), default=0.5),
         min_income=_safe_float(config_data.get("min_income", "0")),
         max_income=_safe_float(config_data.get("max_income", "0")),
         min_gdp=_safe_float(config_data.get("min_gdp", "0")),

@@ -64,6 +64,8 @@ class SaveGame:
     ministerial_experience: Dict[str, float] = field(default_factory=dict)
     ministerial_suitability: Dict[str, float] = field(default_factory=dict)
     ministerial_loyalty: Dict[str, float] = field(default_factory=dict)
+    ministerial_volatility: Dict[str, float] = field(default_factory=dict)
+    ministerial_value: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -351,6 +353,8 @@ def parse_savegame(path: str | Path) -> SaveGame:
     ministerial_experience: Dict[str, float] = {}
     ministerial_suitability: Dict[str, float] = {}
     ministerial_loyalty: Dict[str, float] = {}
+    ministerial_volatility: Dict[str, float] = {}
+    ministerial_value: Dict[str, float] = {}
     ministers_elem = root.find("ministers")
     if ministers_elem is not None:
         for minister in ministers_elem.findall("minister"):
@@ -365,6 +369,14 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 loyalty = float(minister.findtext("loyalty", default="0"))
             except ValueError:
                 loyalty = 0.0
+            try:
+                volatility = float(minister.findtext("volatility", default="0"))
+            except ValueError:
+                volatility = 0.0
+            try:
+                value = float(minister.findtext("value", default="0"))
+            except ValueError:
+                value = 0.0
             suitability = 0.0
             for suit in minister.findall("suits/suit"):
                 if (suit.findtext("grp") or "").strip() != job:
@@ -380,6 +392,8 @@ def parse_savegame(path: str | Path) -> SaveGame:
             ministerial_experience[job] = experience
             ministerial_suitability[job] = suitability
             ministerial_loyalty[job] = loyalty
+            ministerial_volatility[job] = volatility
+            ministerial_value[job] = value
     inherited_values: Dict[str, float] = {}
     inherited_elem = root.find("inherited")
     if inherited_elem is not None:
@@ -425,6 +439,8 @@ def parse_savegame(path: str | Path) -> SaveGame:
         ministerial_experience=ministerial_experience,
         ministerial_suitability=ministerial_suitability,
         ministerial_loyalty=ministerial_loyalty,
+        ministerial_volatility=ministerial_volatility,
+        ministerial_value=ministerial_value,
         inherited_values=inherited_values,
         debt=debt,
         interest_rate=interest_rate,
@@ -478,6 +494,8 @@ def state_from_savegame(
     state.ministerial_experience = save.ministerial_experience.copy()
     state.ministerial_suitability = save.ministerial_suitability.copy()
     state.ministerial_loyalty = save.ministerial_loyalty.copy()
+    state.ministerial_volatility = save.ministerial_volatility.copy()
+    state.ministerial_value = save.ministerial_value.copy()
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position

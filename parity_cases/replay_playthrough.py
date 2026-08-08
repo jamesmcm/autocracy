@@ -21,10 +21,12 @@ import re
 from pathlib import Path
 
 from autocracy import simulator
-from autocracy.models import PolicyAction, SimulationState
+from autocracy.models import PolicyAction, SimulationConfig, SimulationState
 from autocracy.savegame import load_state_from_savegame, parse_savegame
 
 SAVES_DIR = Path("parity_cases/dem3saves")
+
+REPLAY_CONFIG = SimulationConfig(minister_loyalty=True)
 
 DEFAULT_METRICS = ["GDP", "Health", "Education", "CrimeRate", "Unemployment", "IncomeTax", "SalesTax"]
 
@@ -89,13 +91,18 @@ def main(verbose: bool) -> None:
     )
     for orders_path in turns:
         n = turn_number(Path(orders_path))
+        # The capture skips some turns (e.g. no turn3_orders).  The orders
+        # file for turn n is placed on top of the state at the *start* of
+        # turn n, so advance past any missing turns first.
+        while state.turn < n:
+            state = simulator.process_end_of_turn(state, graph, data=data, config=REPLAY_CONFIG)
         orders = load_orders(Path(orders_path), state)
         for action in orders:
             try:
                 state = simulator.apply_actions(state, [action], data=data)
             except Exception as exc:
                 print(f"  turn {n} action {action.policy_name}: ERROR {exc}")
-        state = simulator.process_end_of_turn(state, graph, data=data)
+        state = simulator.process_end_of_turn(state, graph, data=data, config=REPLAY_CONFIG)
 
         # Ground truth: the _initial save for the NEXT turn
         nxt = SAVES_DIR / f"turn{n + 1}_initial.xml"

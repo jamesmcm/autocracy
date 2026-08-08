@@ -22,6 +22,11 @@ class SimulationConfig:
     pressure_group_events: bool = False
     assassinations: bool = False
     random_seed: int = 0
+    # Deterministic minister-loyalty subsystem.  When enabled, ministers
+    # gain/lose loyalty every turn from their satisfaction with the enacted
+    # policies, which feeds the per-turn political-capital income.  Disabling
+    # it keeps the capital income at the value loaded from the save.
+    minister_loyalty: bool = False
 
 
 @dataclass(slots=True)
@@ -126,6 +131,7 @@ class CountrySetup:
     overrides: List[dict] = field(default_factory=list)
     economic_cycle_start: float = 0.0
     wealth_mod: float = 1.0
+    difficulty: float = 0.5
     min_income: float = 0.0
     max_income: float = 0.0
     min_gdp: float = 0.0
@@ -198,6 +204,11 @@ class SimulationState:
     # Per-department minister loyalty, used to recompute the per-turn
     # political-capital income (it drifts with loyalty).
     ministerial_loyalty: Dict[str, float] = field(default_factory=dict)
+    # Minister volatility and current satisfaction (the game's minister
+    # ``volatility`` and ``value`` fields).  Satisfaction drives the loyalty
+    # dynamics in ``SIM_Minister::ProcessLoyalty``.
+    ministerial_volatility: Dict[str, float] = field(default_factory=dict)
+    ministerial_value: Dict[str, float] = field(default_factory=dict)
     # Human-readable record of stochastic-system firings this run (events,
     # dilemmas, attacks).  Only populated when the corresponding
     # ``SimulationConfig`` toggle is enabled.
