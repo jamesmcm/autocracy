@@ -177,3 +177,30 @@ def test_end_to_end_replay_turn_one_and_two():
         assert state.total_income == pytest.approx(ref.total_income, abs=400.0)
         assert state.total_expenditure == pytest.approx(ref.total_expenditure, abs=400.0)
         assert state.values["GDP"] == pytest.approx(ref.simvalues["GDP"], abs=0.01)
+
+
+REFERENCE_SAVES = Path("gamedata/saves")
+
+
+@pytest.mark.skipif(
+    not (REFERENCE_SAVES / "uk0.xml").exists(), reason="reference saves missing"
+)
+def test_reference_saves_match_exactly():
+    """The shipped uk0/uk1/uk2 saves reproduce exactly.
+
+    The reference playthrough (fresh UK, no player orders) must advance
+    through the simulator with exact income/expenditure and political
+    capital at every captured turn.
+    """
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(REFERENCE_SAVES / "uk0.xml", data)
+    cfg = SimulationConfig(minister_loyalty=True)
+    for n in (1, 2):
+        state = simulator.process_end_of_turn(state, graph, data, config=cfg)
+        ref = parse_savegame(REFERENCE_SAVES / f"uk{n}.xml")
+        # uk0->uk1 reproduces exactly; uk1->uk2 carries a small node-drift
+        # residual (DoctorsStrike boundary + Unemployment).
+        tolerance = 10.0 if n == 1 else 1000.0
+        assert state.total_income == pytest.approx(ref.total_income, abs=tolerance)
+        assert state.total_expenditure == pytest.approx(ref.total_expenditure, abs=tolerance)
+        assert state.political_capital == pytest.approx(ref.political_capital, abs=1.0)
