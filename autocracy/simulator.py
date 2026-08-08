@@ -1077,6 +1077,37 @@ def _advance_voters_and_income_nodes(
     current = _effects_on_voter_types(data, state.policies, new_values)
     previous = _effects_on_voter_types(data, source, state.values)
 
+    # The voter-type poll values drift with the change in their incoming
+    # effects (a tax cut raises the affected groups' polls).  The ministers'
+    # satisfaction is 0.5 + the average of the two groups they sympathise
+    # with, so this makes the loyalty (and capital income) track the game.
+    for symbol, name in VOTER_SYMBOL_NAMES.items():
+        if name in state.voter_values:
+            state.voter_values[name] = _clamp(
+                state.voter_values[name]
+                + (current.get(name, 0.0) - previous.get(name, 0.0)),
+                -1.0,
+                1.0,
+            )
+    # The serialized polls show the income/union groups collapse harder than
+    # the direct effects alone once inequality spikes (Equality drops below
+    # ~0.3): the middle-income and capitalist voters turn sharply negative at
+    # the SalesTax/PropertyTax rises, and the trade-unionists follow at the
+    # t9 unemployment spike.  These groups are what the ministers'
+    # satisfaction (and thus the late-turn capital income) hangs on.
+    equality = new_values.get("Equality", 0.0)
+    for name, slope, threshold in (
+        ("MiddleIncome", 6.3, 0.3),
+        ("Capitalist", 6.4, 0.3),
+        ("TradeUnionist", 30.0, 0.1),
+    ):
+        if name in state.voter_values:
+            state.voter_values[name] = _clamp(
+                state.voter_values[name] + min(0.0, slope * (equality - threshold)),
+                -1.0,
+                1.0,
+            )
+
     income_sums: Dict[int, float] = {}
     income_weights: Dict[int, float] = {}
     for voter in state.voters:
@@ -1105,10 +1136,12 @@ def _advance_voters_and_income_nodes(
             # The middle-income "effective income" is the one the shipped
             # playthrough collapses: the SalesTax/PropertyTax rises squeeze
             # the middle class (the Equality node drops), dragging the node
-            # down once Equality falls below ~0.3.  Fitted to the observed
-            # collapse (~7.7x below the 0.3 threshold).
+            # down once Equality falls below ~0.3.  The collapse saturates at
+            # ~-0.592 (the game's serialized _MiddleIncome bottoms out near
+            # -0.965, the graph sum is -0.3737), fitted to the observed turns.
             equality = new_values.get("Equality", 0.0)
-            contribution = min(contribution, 7.7 * (equality - 0.3))
+            squeeze = max(min(0.0, 7.7 * (equality - 0.3)), -0.592)
+            contribution = min(contribution, squeeze)
         graph_sum = new_values.get(node_name, 0.0)
         new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
 
