@@ -1226,6 +1226,13 @@ def _advance_state_values(
     if "_year" in new_values:
         # The game writes the seasonal year neuron from the turn being closed.
         new_values["_year"] = (state.turn % 4) / 4.0
+    if "_effectivedebt_" in new_values:
+        # The effective-debt neuron is the debt-to-(DEBT_TO_GDP_MAX*GDP) ratio
+        # recomputed every turn; the situation manager reads it as a source
+        # (DebtCrisis = 0.2*interest^4 + effective_debt^4).  It is serialized
+        # on save but must be refreshed from the live debt/GDP rather than
+        # kept at the loaded value.
+        new_values["_effectivedebt_"] = _effective_debt_ratio(state, data)
 
     # SituationManager runs before the effect vector in the main turn path.
     # Keep its activation decision separate from the newly calculated latent
