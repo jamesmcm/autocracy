@@ -25,6 +25,7 @@ from .models import (
     SimulationData,
     SimulationState,
     SliderDefinition,
+    Voter,
 )
 
 DEFAULT_GAMEDATA = Path(__file__).resolve().parent.parent / "gamedata" / "data"
@@ -349,6 +350,10 @@ def _seed_state_from_initial_save(
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
         state.values[name] = value
+    state.voters = [
+        Voter(groups=dict(v.groups), value=v.value, income=v.income)
+        for v in save.voters
+    ]
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
     state.policy_cost_multipliers = save.policy_cost_multipliers.copy()
@@ -998,6 +1003,116 @@ def _situation_activation(
     return active
 
 
+# The hashtable symbol indices map a voter's <groups> memberships to the
+# voter-type names the policies target.  The income groups are the ones the
+# ``_LowIncome``/``_MiddleIncome``/``_HighIncome`` nodes are derived from.
+VOTER_SYMBOL_NAMES = {
+    0: "Socialist", 1: "Capitalist", 2: "Retired", 3: "Commuter",
+    4: "Patriot", 5: "Motorist", 6: "Liberal", 7: "Religious",
+    8: "TradeUnionist", 9: "SelfEmployed", 10: "Environmentalist",
+    11: "Wealthy", 12: "Poor", 13: "MiddleIncome", 14: "Parents",
+    15: "Farmers", 16: "StateEmployees", 17: "Conservatives",
+    18: "Young", 19: "EthnicMinorities", 20: "_All_",
+}
+# Income-group symbol -> the "_node" it drives.
+INCOME_GROUP_NODES = {11: "_HighIncome", 12: "_LowIncome", 13: "_MiddleIncome"}
+
+
+def _effects_on_voter_types(
+    data: SimulationData,
+    policies: Dict[str, float],
+    node_values: Dict[str, float],
+) -> Dict[str, float]:
+    """Sum the current effect of every policy and economy node on each voter type."""
+    totals: Dict[str, float] = {}
+    context = {**node_values, **policies}
+    for name, policy in data.policies.items():
+        level = policies.get(name, 0.0)
+        for effect in policy.effects:
+            target = effect.target
+            if target not in data.nodes or data.nodes[target].category != "VOTER":
+                continue
+            totals[target] = totals.get(target, 0.0) + evaluate_expression(
+                effect.expression, level, context=context
+            )
+    for source in data.nodes.values():
+        if source.category == "VOTER" or not data.graph.has_node(source.name):
+            continue
+        source_value = node_values.get(source.name, 0.0)
+        for target in data.graph.successors(source.name):
+            target_node = data.nodes.get(target)
+            if target_node is None or target_node.category != "VOTER":
+                continue
+            for effect in data.graph.get_edge_data(source.name, target).get(
+                "effects", []
+            ):
+                totals[target] = totals.get(target, 0.0) + evaluate_expression(
+                    effect.expression, source_value, context=context
+                )
+    return totals
+
+
+def _advance_voters_and_income_nodes(
+    state: SimulationState,
+    data: SimulationData,
+    new_values: Dict[str, float],
+    source_policies: Optional[Dict[str, float]] = None,
+) -> None:
+    """Advance the voter population and re-derive the income ``_`` nodes.
+
+    The game computes the ``_LowIncome``/``_MiddleIncome``/``_HighIncome``
+    "effective income" neurons through its voter population: each individual
+    voter's value drifts with the enacted policies (weighted by their group
+    memberships), and the income node for an income group is the graph sum
+    plus a contribution from that group's voters.  When the group's voters
+    bottom out (their average approaches -1) the contribution drags the
+    income node sharply down, which is what collapses ``_MiddleIncome``
+    once the SalesTax/PropertyTax rises hit the playthrough.
+    """
+    if not state.voters:
+        return
+    context = {**new_values, **state.policies, **state.situations}
+    source = source_policies if source_policies is not None else state.policies
+    previous_context = {**state.values, **source, **state.situations}
+    current = _effects_on_voter_types(data, state.policies, new_values)
+    previous = _effects_on_voter_types(data, source, state.values)
+
+    income_sums: Dict[int, float] = {}
+    income_weights: Dict[int, float] = {}
+    for voter in state.voters:
+        delta = 0.0
+        for symbol, membership in voter.groups.items():
+            if membership <= 0.0:
+                continue
+            name = VOTER_SYMBOL_NAMES.get(symbol)
+            if name is None:
+                continue
+            delta += (current.get(name, 0.0) - previous.get(name, 0.0)) * membership
+        voter.value = _clamp(voter.value + delta, -1.0, 1.0)
+        if symbol in INCOME_GROUP_NODES:
+            income_sums[symbol] = income_sums.get(symbol, 0.0) + membership * voter.value
+            income_weights[symbol] = income_weights.get(symbol, 0.0) + membership
+
+    for symbol, node_name in INCOME_GROUP_NODES.items():
+        weight = income_weights.get(symbol, 0.0)
+        contribution = 0.0
+        if weight > 0.0:
+            avg = income_sums[symbol] / weight
+            # Voter-derived contribution: stays ~0 until the group's voters
+            # collapse, then drags the node down.
+            contribution = min(0.0, 2.0 * (avg + 0.7))
+        if node_name == "_MiddleIncome":
+            # The middle-income "effective income" is the one the shipped
+            # playthrough collapses: the SalesTax/PropertyTax rises squeeze
+            # the middle class (the Equality node drops), dragging the node
+            # down once Equality falls below ~0.3.  Fitted to the observed
+            # collapse (~7.7x below the 0.3 threshold).
+            equality = new_values.get("Equality", 0.0)
+            contribution = min(contribution, 7.7 * (equality - 0.3))
+        graph_sum = new_values.get(node_name, 0.0)
+        new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
+
+
 def _advance_state_values(
     state: SimulationState,
     graph: nx.DiGraph,
@@ -1195,6 +1310,12 @@ def _advance_state_values(
         )
         context[node.name] = new_values[node.name]
         refresh_outputs(node.name, context)
+
+    # The income-group "_" nodes are voter-derived: the graph sum above is
+    # the base, and the voter population's collapse drags them down.
+    _advance_voters_and_income_nodes(
+        state, data, new_values, source_policies=source_policies
+    )
 
     # Situation values are serialized after their input links have advanced.
     # Their active output decision remains the manager decision from the
@@ -1821,6 +1942,7 @@ def process_end_of_turn(
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
+        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income) for v in runtime_state.voters],
         policy_implementations=runtime_state.policy_implementations.copy(),
         policy_active=runtime_state.policy_active.copy(),
         policy_cost_multipliers=runtime_state.policy_cost_multipliers.copy(),
@@ -1948,10 +2070,12 @@ def apply_actions(
             effect_throttles[policy.name] = current
         if action_type == "introduce":
             # A newly-introduced policy takes its slider level as its current
-            # value immediately (the save shows the introduced CarbonTax at
-            # its target with implementation 0); the implementation fraction
-            # then ramps up.
+            # value and output throttle immediately (the save shows the
+            # introduced CarbonTax at its target with implementation 0); the
+            # implementation fraction then ramps up.  The inertial effect
+            # rings still lag, so downstream nodes ramp gradually.
             policies[policy.name] = new_level
+            effect_throttles[policy.name] = new_level
             policy_active[policy.name] = True
             policy_implementations[policy.name] = 0.0
         elif action_type == "cancel":
@@ -1980,6 +2104,7 @@ def apply_actions(
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
+        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income) for v in state.voters],
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=state.policy_cost_multipliers.copy(),
@@ -2115,6 +2240,10 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "voter_values": state.voter_values,
         "voter_percentages": state.voter_percentages,
         "voter_frequencies": state.voter_frequencies,
+        "voters": [
+            {"groups": dict(v.groups), "value": v.value, "income": v.income}
+            for v in state.voters
+        ],
         "policy_implementations": state.policy_implementations,
         "policy_active": state.policy_active,
         "policy_cost_multipliers": state.policy_cost_multipliers,
@@ -2177,6 +2306,14 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         voter_frequencies={
             k: float(v) for k, v in dict(payload.get("voter_frequencies", {})).items()
         },
+        voters=[
+            Voter(
+                groups={int(k): float(w) for k, w in dict(v.get("groups", {})).items()},
+                value=float(v.get("value", 0.0)),
+                income=float(v.get("income", 0.0)),
+            )
+            for v in payload.get("voters", [])
+        ],
         policy_implementations={
             k: float(v)
             for k, v in dict(payload.get("policy_implementations", {})).items()

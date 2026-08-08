@@ -153,6 +153,22 @@ class SimulationData:
 
 
 @dataclass(slots=True)
+class Voter:
+    """An individual in the voter population.
+
+    Each voter carries a membership weight for every voter type (the save's
+    ``<groups>`` block, keyed by the hashtable symbol index) and a current
+    value (the save's ``<value>``).  The voter types the game polls aggregate
+    these members; the ``_LowIncome``/``_MiddleIncome``/``_HighIncome``
+    "effective income" nodes are derived from the income-group members.
+    """
+
+    groups: Dict[int, float] = field(default_factory=dict)
+    value: float = 0.0
+    income: float = 0.0
+
+
+@dataclass(slots=True)
 class SimulationState:
     """Mutable per-turn state for a single country."""
 
@@ -174,6 +190,9 @@ class SimulationState:
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    # The individual voter population (loaded from the save), used to derive
+    # the ``_LowIncome``/``_MiddleIncome``/``_HighIncome`` income nodes.
+    voters: List[Voter] = field(default_factory=list)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
     policy_active: Dict[str, bool] = field(default_factory=dict)
     policy_cost_multipliers: Dict[str, float] = field(default_factory=dict)

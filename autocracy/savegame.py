@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 import networkx as nx
 
 from . import simulator
-from .models import EffectHistory, SimulationData, SimulationState
+from .models import EffectHistory, SimulationData, SimulationState, Voter
 
 ENCODING = "latin-1"
 DEFAULT_TOLERANCE = 1e-3
@@ -37,6 +37,7 @@ class SaveGame:
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    voters: List[Voter] = field(default_factory=list)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
     policy_active: Dict[str, bool] = field(default_factory=dict)
     policy_cost_multipliers: Dict[str, float] = field(default_factory=dict)
@@ -349,6 +350,25 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 )
             except ValueError:
                 pass
+    voters: List[Voter] = []
+    voters_elem = root.find("voters")
+    if voters_elem is not None:
+        for voter_elem in voters_elem.findall("voter"):
+            try:
+                value = float(voter_elem.findtext("value", default="0"))
+            except ValueError:
+                value = 0.0
+            groups: Dict[int, float] = {}
+            groups_text = (voter_elem.findtext("groups") or "").strip()
+            if groups_text:
+                for pair in groups_text.split(","):
+                    if "=" in pair:
+                        key, _, weight = pair.partition("=")
+                        try:
+                            groups[int(key.strip())] = float(weight.strip())
+                        except ValueError:
+                            continue
+            voters.append(Voter(groups=groups, value=value))
     ministerial_effectiveness: Dict[str, float] = {}
     ministerial_competence: Dict[str, float] = {}
     ministerial_experience: Dict[str, float] = {}
@@ -444,6 +464,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         voter_values=voter_values,
         voter_percentages=voter_percentages,
         voter_frequencies=voter_frequencies,
+        voters=voters,
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=policy_cost_multipliers,
@@ -500,6 +521,10 @@ def state_from_savegame(
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
         state.values[name] = value
+    state.voters = [
+        Voter(groups=dict(v.groups), value=v.value, income=v.income)
+        for v in save.voters
+    ]
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
     state.policy_cost_multipliers = save.policy_cost_multipliers.copy()
