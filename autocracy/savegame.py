@@ -66,6 +66,7 @@ class SaveGame:
     ministerial_loyalty: Dict[str, float] = field(default_factory=dict)
     ministerial_volatility: Dict[str, float] = field(default_factory=dict)
     ministerial_value: Dict[str, float] = field(default_factory=dict)
+    ministerial_sympathies: Dict[str, List[str]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -355,6 +356,15 @@ def parse_savegame(path: str | Path) -> SaveGame:
     ministerial_loyalty: Dict[str, float] = {}
     ministerial_volatility: Dict[str, float] = {}
     ministerial_value: Dict[str, float] = {}
+    ministerial_sympathies: Dict[str, List[str]] = {}
+    # The <hashtable> block maps numeric voter-type symbols to names; the
+    # ministers' sym1/sym2 reference it.
+    hashtable: Dict[str, str] = {}
+    hashtable_elem = root.find("hashtable/hashes")
+    if hashtable_elem is not None and hashtable_elem.text:
+        entries = [entry.strip() for entry in hashtable_elem.text.split(",") if entry.strip()]
+        for idx in range(0, len(entries) - 1, 2):
+            hashtable[entries[idx + 1]] = entries[idx]
     ministers_elem = root.find("ministers")
     if ministers_elem is not None:
         for minister in ministers_elem.findall("minister"):
@@ -377,6 +387,12 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 value = float(minister.findtext("value", default="0"))
             except ValueError:
                 value = 0.0
+            sym1 = (minister.findtext("sym1") or "").strip()
+            sym2 = (minister.findtext("sym2") or "").strip()
+            sympathies = [
+                hashtable.get(sym1, sym1),
+                hashtable.get(sym2, sym2),
+            ]
             suitability = 0.0
             for suit in minister.findall("suits/suit"):
                 if (suit.findtext("grp") or "").strip() != job:
@@ -394,6 +410,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
             ministerial_loyalty[job] = loyalty
             ministerial_volatility[job] = volatility
             ministerial_value[job] = value
+            ministerial_sympathies[job] = sympathies
     inherited_values: Dict[str, float] = {}
     inherited_elem = root.find("inherited")
     if inherited_elem is not None:
@@ -441,6 +458,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         ministerial_loyalty=ministerial_loyalty,
         ministerial_volatility=ministerial_volatility,
         ministerial_value=ministerial_value,
+        ministerial_sympathies=ministerial_sympathies,
         inherited_values=inherited_values,
         debt=debt,
         interest_rate=interest_rate,
@@ -496,6 +514,9 @@ def state_from_savegame(
     state.ministerial_loyalty = save.ministerial_loyalty.copy()
     state.ministerial_volatility = save.ministerial_volatility.copy()
     state.ministerial_value = save.ministerial_value.copy()
+    state.ministerial_sympathies = {
+        k: list(v) for k, v in save.ministerial_sympathies.items()
+    }
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position

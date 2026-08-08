@@ -86,7 +86,7 @@ def main(verbose: bool) -> None:
     print("-" * 96)
 
     turns = sorted(
-        (Path(p) for p in glob.glob(str(SAVES_DIR / "turn*_orders.xml"))),
+        (Path(p) for p in glob.glob(str(SAVES_DIR / "turn*_o*.xml"))),
         key=turn_number,
     )
     for orders_path in turns:

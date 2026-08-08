@@ -209,6 +209,10 @@ class SimulationState:
     # dynamics in ``SIM_Minister::ProcessLoyalty``.
     ministerial_volatility: Dict[str, float] = field(default_factory=dict)
     ministerial_value: Dict[str, float] = field(default_factory=dict)
+    # The voter-group symbols each minister sympathises with (save sym1/sym2).
+    # The minister's satisfaction value is 0.5 + the average of those voter
+    # groups' current values.
+    ministerial_sympathies: Dict[str, List[str]] = field(default_factory=dict)
     # Human-readable record of stochastic-system firings this run (events,
     # dilemmas, attacks).  Only populated when the corresponding
     # ``SimulationConfig`` toggle is enabled.
