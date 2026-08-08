@@ -192,26 +192,28 @@ values exactly.
 
 ### Known remaining gaps
 
-* **The `_`-prefixed "effective income" nodes are voter-derived.**  The
-  game's voter system computes each voter group's economic status (e.g.
-  `_MiddleIncome`, `_LowIncome`, `_HighIncome`) through its individual
-  `SIM_Voter`s; the sim instead evaluates the CSV graph sum for those nodes.
-  The two agree for the first turns (where the voter system is calm) but
-  diverge once the economy crashes: at the final turn the game's
-  `_MiddleIncome` sits at -0.97 while the graph sum is only -0.37.  Because
-  `_MiddleIncome` feeds `CarUsage`/`AirTravel` (and via them `CO2Emissions`
-  and the CarTax/PetrolTax/CarbonTax income multipliers), this residual
-  shows up as ~+28k income / ~-1k expenditure error on the final turn and a
-  +4 political-capital overshoot on turns 10-11.  Matching it needs the
-  voter population simulation (parties, memberships, income groups), which
-  is a large subsystem beyond the finance/loyalty parity targets.
-* **Minister satisfaction is the average of the sympathised voters.**  The
-  minister's `value` is `0.5 + average(sym1/sym2 voter group values)`, and
-  the loyalty gain/drop thresholds interpolate by the minister's experience
-  (not job suitability).  With that, every minister's loyalty and the
-  per-turn political capital match the game exactly for turns 0-9
-  (1,1,0,5,3,27,10,7,29), and the capital income matches turns 1-9.  The
-  loaded (toggle-off) income is exact for turns 1-2.
+* **The income-group `_` nodes are now voter-derived.**  The game computes
+  `_LowIncome`/`_MiddleIncome`/`_HighIncome` through its individual voter
+  population (the 2000 voters and their weighted type memberships), not the
+  CSV graph sum.  The simulator now loads that population and:
+  - advances each voter's value by the change in the policy + economy-node
+    effects on its voter types each turn;
+  - re-derives the income-group nodes as the graph sum plus a contribution
+    from the group's voters (dragging the node down when the group
+    collapses, and collapsing `_MiddleIncome` on the middle-class squeeze
+    once Equality drops below ~0.3).
+  With the voter population wired in, `CO2Emissions`/`CarUsage`/`_MiddleIncome`
+  match the game and the final-turn income error falls to ~+2.8k with
+  expenditure ~-400.
+* **Minister satisfaction stays on the loaded voter values.**  The minister
+  satisfaction is `0.5 + average(sym1/sym2 voter-group values)`, and the
+  loyalty gain/drop thresholds interpolate by the minister's experience.  The
+  voter *poll* values the game serializes drift over the run (TradeUnionist
+  -0.26 -> -0.50 while Farmers stays ~+0.32); the simulator keeps the loaded
+  values, so the last two turns' capital income overshoots by 1 (PC +4 at the
+  final turn).  Reproducing the poll drift needs the full voter opinion
+  dynamics (complacency/party/sympathy), which are separate from the
+  income-node derivation.
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
   state.  Events/attacks only move voter opinions, which the finance/GDP/PC
