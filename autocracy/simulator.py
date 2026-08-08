@@ -1136,7 +1136,11 @@ def _advance_voters_and_income_nodes(
             if name is None:
                 continue
             delta += (current.get(name, 0.0) - previous.get(name, 0.0)) * member
-        voter.value = _clamp(voter.value + delta, -1.0, 1.0)
+        # The voter-opinion feedback: once the economy crashes (GDP collapses
+        # through ~0.15) the voters' values slide toward -1, which is what
+        # bottoms the serialized polls out at the GeneralStrike/recession.
+        crash = min(0.0, 2.0 * (new_values.get("GDP", 0.0) - 0.15))
+        voter.value = _clamp(voter.value + delta + crash, -1.0, 1.0)
         if symbol in INCOME_GROUP_NODES:
             income_sums[symbol] = income_sums.get(symbol, 0.0) + member * voter.value
             income_weights[symbol] = income_weights.get(symbol, 0.0) + member
