@@ -44,6 +44,7 @@ class SaveGame:
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    voter_frequency_grudges: Dict[str, float] = field(default_factory=dict)
     voters: List[Voter] = field(default_factory=list)
     parties: Dict[str, PartyState] = field(default_factory=dict)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
@@ -383,6 +384,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
     voter_values: Dict[str, float] = {}
     voter_percentages: Dict[str, float] = {}
     voter_frequencies: Dict[str, float] = {}
+    voter_frequency_grudges: Dict[str, float] = {}
     parties: Dict[str, PartyState] = {}
     parties_elem = root.find("parties")
     if parties_elem is not None:
@@ -418,6 +420,19 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 )
             except ValueError:
                 pass
+    grudges_elem = root.find("grudges")
+    if grudges_elem is not None:
+        for grudge in grudges_elem.findall("grudge"):
+            target = (grudge.findtext("target") or "").strip()
+            if not target.endswith("_freq"):
+                continue
+            try:
+                value = float(grudge.findtext("value", default="0"))
+            except ValueError:
+                continue
+            voter_frequency_grudges[target] = (
+                voter_frequency_grudges.get(target, 0.0) + value
+            )
     voters: List[Voter] = []
     voters_elem = root.find("voters")
     if voters_elem is not None:
@@ -564,6 +579,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         voter_values=voter_values,
         voter_percentages=voter_percentages,
         voter_frequencies=voter_frequencies,
+        voter_frequency_grudges=voter_frequency_grudges,
         voters=voters,
         parties=parties,
         policy_implementations=policy_implementations,
@@ -625,6 +641,7 @@ def state_from_savegame(
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
         state.values[name] = value
+    state.voter_frequency_grudges = save.voter_frequency_grudges.copy()
     state.voters = [
         replace(v, groups=dict(v.groups), organizations=list(v.organizations))
         for v in save.voters

@@ -313,6 +313,13 @@ def _apply_grudge(
         return
     kind = _voter_target(state, target)
     if kind is not None:
+        if kind == "voter_frequencies":
+            # Native CreateGrudge creates an input to the nested frequency
+            # neuron. Keep that input separate from the current value so the
+            # next CalculateValue pass does not erase it or add it twice.
+            state.voter_frequency_grudges[target] = (
+                state.voter_frequency_grudges.get(target, 0.0) + value
+            )
         current = getattr(state, kind)[target]
         updated = _clamp(current + value, -1.0, 1.0)
         getattr(state, kind)[target] = updated

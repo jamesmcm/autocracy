@@ -71,6 +71,7 @@ class NodeDefinition:
     maximum: float
     emotion: str = ""
     icon: str = ""
+    initial_percentage: float = 0.0
 
 
 @dataclass(slots=True)
@@ -234,6 +235,11 @@ class SimulationState:
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    # Persistent CreateGrudge inputs targeting VoterType frequency neurons.
+    # These are separate from the neuron current value: native SIM_Neuron
+    # calculation starts from zero and adds the grudge alongside ordinary
+    # effect inputs on every pass.
+    voter_frequency_grudges: Dict[str, float] = field(default_factory=dict)
     # The individual voter population (loaded from the save), used to derive
     # the ``_LowIncome``/``_MiddleIncome``/``_HighIncome`` income nodes.
     voters: List[Voter] = field(default_factory=list)

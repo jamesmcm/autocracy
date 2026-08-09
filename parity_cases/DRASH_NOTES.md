@@ -305,9 +305,9 @@ credit-rating factor before interpolating `INTEREST_RATE_MIN/MAX`; the Python
 rate helper now models that input.  The final capture is serialized as game
 turn 12 in `turn11_initial.xml`, and the replay harness now aligns by the XML
 turn field.  With the current ring ordering and the captured StateHealth
-freeze-until-order timing, its final comparison is income about -1,229.3 and
-expenditure +79.8; the earlier pre-policy sampling baseline was about -1,225
-and -32.5.  The remaining material state residual is the captured late-turn
+  freeze-until-order timing, its final comparison is income about -1,490.4 and
+  expenditure +88.2.  The earlier pre-policy sampling baseline was about -1,225
+  and -32.5.  The remaining material state residual is the captured late-turn
 `ViolentCrimeRate` anomaly, followed by targeted inertial-ring and voter-party
 model gaps listed below.
 
@@ -339,7 +339,7 @@ the old ring head immediately after a slider order. This improves the targeted
 ring heads, and the StateHealthService ring now remains at its captured .211
 value through no-op turns until the turn-8 order. The post-order raw samples
 still differ because each outgoing effect has missing runtime throttle state;
-the aligned final residual is now about `-1,229` income / `+80` expenditure.
+  the aligned final residual is now about `-1,490` income / `+88` expenditure.
 Effect-level desired throttles are not serialized, so no stronger global ring
 rule is justified from the captures.
 
@@ -491,3 +491,29 @@ are not serialized, and the saved approval also has perception/fundraising/
 election modifiers that are not yet modeled. The late replay therefore still
 has a measured party-count and poll residual when the simulator's voter-value
 approximation diverges.
+
+### Native VoterType frequency pass (current)
+
+Static disassembly of `SIM_VoterType::NextTurn` and `SIM_Neuron::CalculateValue`
+resolved the remaining first-transition frequency mismatch. The serialized
+`<freqval>` is the current value of the nested neuron at `SIM_VoterType +
+0x380`; it is not the CSV population percentage at `+0x2c4`. The nested
+`SIM_Neuron` is constructed with a zero base and `[-1, 1]` bounds, then runs
+with the ordinary effect vector before `SIM_VoterManager::NextTurn`. The
+percentage is separately recomputed from the linked-list membership count.
+
+The save parser now retains `<grudges>` whose targets end in `_freq` as
+persistent frequency-neuron inputs. The four UK mission inputs in the captured
+turn-zero save are `Farmers -0.07`, `Retired -0.09`, `EthnicMinorities -0.25`,
+and `Religious +0.05`; applying them removes the previous `0.25`/`0.09` first
+turn errors. Active situation outputs are refreshed from their stored pre-pass
+value before the frequency list consumes them, fixing the larger
+`VigilanteMobs -> Conservatives_freq` half-ring error. A regression test covers
+both the mission inputs and the first transition.
+
+The remaining frequency differences are small (roughly `1e-4` to `3e-4`) and
+come from rounded serialized inertial histories or the native random/situation
+manager timing. The captured `_winning_` value is still an event-manager
+runtime result absent from the turn-zero save, and the global-economy random
+cursor remains non-serialized. The static injector preflight remains the safe
+boundary for gdb/LD_PRELOAD work; the installed game is not launched.

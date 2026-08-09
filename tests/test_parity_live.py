@@ -87,6 +87,57 @@ def test_turn_zero_to_one_finance_matches_finances_block():
     assert "GeneralStrike" not in state.active_situations
 
 
+@pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
+def test_hidden_neurons_and_native_ideology_pairs_advance_before_voters():
+    """The manager-owned hidden pass feeds the next voter-group refresh."""
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(SAVES_DIR / "turn0_initial.xml", data)
+    state = _apply_orders(state, graph, data, 0)
+    advanced = simulator.process_end_of_turn(state, graph, data)
+    reference = parse_savegame(SAVES_DIR / "turn1_initial.xml")
+
+    for name in (
+        "_global_socialism",
+        "_global_liberalism",
+        "_security_",
+        "_effectivedebt_",
+    ):
+        assert advanced.values[name] == pytest.approx(
+            reference.hidden_values[name], abs=1e-4
+        )
+
+    for actual, expected in zip(advanced.voters[:20], reference.voters[:20]):
+        for symbol in (0, 1, 6, 17):
+            assert actual.groups[symbol] == pytest.approx(
+                expected.groups[symbol], abs=1e-4
+            )
+
+
+@pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
+def test_voter_frequency_neurons_apply_saved_grudge_inputs():
+    """Mission CreateGrudge inputs survive the native frequency-neuron pass."""
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(SAVES_DIR / "turn0_initial.xml", data)
+    assert state.voter_frequency_grudges == {
+        "Farmers_freq": pytest.approx(-0.07),
+        "Retired_freq": pytest.approx(-0.09),
+        "EthnicMinorities_freq": pytest.approx(-0.25),
+        "Religious_freq": pytest.approx(0.05),
+    }
+    state = _apply_orders(state, graph, data, 0)
+    advanced = simulator.process_end_of_turn(state, graph, data)
+    reference = parse_savegame(SAVES_DIR / "turn1_initial.xml")
+    for name in state.voter_frequency_grudges:
+        assert advanced.voter_frequencies[name] == pytest.approx(
+            reference.voter_frequencies[name], abs=1e-4
+        )
+    # VigilanteMobs is an active inertial situation output. It must be
+    # refreshed before the VoterType neuron list consumes it.
+    assert advanced.voter_frequencies["Conservatives_freq"] == pytest.approx(
+        reference.voter_frequencies["Conservatives_freq"], abs=2e-4
+    )
+
+
 @pytest.mark.skipif(not (SAVES_DIR / "turn1_initial.xml").exists(), reason="saves missing")
 def test_active_floor_policy_keeps_minimum_live_income_separate_from_history():
     state, _ = load_state_from_savegame(SAVES_DIR / "turn1_initial.xml")

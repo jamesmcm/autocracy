@@ -15,7 +15,7 @@ All paths below are relative to `gamedata/data/`, which mirrors the Democracy 
 | File/Folder | Purpose | Notes |
 |-------------|---------|-------|
 | `simulation/simulation.csv` | Core statistics (“nodes”) such as GDP, CrimeRate, CO₂, etc. | Each row defines metadata (`name`, `guiname`, `description`, `min`, `max`) and then a list of `source,equation,inertia` triplets representing inbound influences (edges) for the DAG. |
-| `simulation/votertypes.csv` | Voter happiness + membership nodes. | Similar structure: default support (`default`), membership share (`percentage`), and `Influences` columns that create edges. Membership nodes (`<Group>_freq`) are synthesized automatically. |
+| `simulation/votertypes.csv` | Voter happiness + membership nodes. | Similar structure: default support (`default`), linked-list membership seed (`percentage`), and `Influences` columns that create edges. Membership nodes (`<Group>_freq`) are synthesized automatically as zero-base native frequency neurons. |
 | `simulation/policies.csv` | Policy sliders that the player can adjust. | Columns include slider identifier (`slider`), action costs (`introduce`, `cancel`, `raise`, `lower`), department, `mincost`/`maxcost` (and analogous income columns), `cost multiplier` / `incomemultiplier` expressions that now get parsed into live budget modifiers, implementation lag, and `#Effects` columns describing outbound edges toward other nodes. |
 | `simulation/sliders.csv` | Slider metadata. | Declares whether a slider is `DISCRETE` (enum-like) or `PERCENTAGE` (continuous). Discrete labels (`NONE`, `LOW`, `MEDIUM`, …) provide normalized action levels, while the executable still stores the target as a float. Percentage sliders use continuous 0 – 1 values. |
 | `simulation/situations.csv` | Dynamic modifiers (“situations”). | Each row defines trigger thresholds, optional upkeep cost, a list of input effects (how existing nodes/policies influence the latent value), and output effects (how the active situation feeds back into the DAG). Inputs/outputs can also specify inertia so their impact ramps over multiple turns. |
@@ -54,7 +54,7 @@ Common behavioural patterns handled correctly:
 - **Linear**: `0.05 + (0.12*x)` – straight proportional influence.
 - **Polynomial / threshold**: `0.1*(x^6)` – higher-order sensitivity near extremes.
 - **Piecewise via `max/min`**: e.g., `max(0, (x - 0.3))`. These are fully supported through the allowed built-ins.
-- **Frequency/membership updates**: Equations targeting `<Group>_freq` nodes are treated like any other effect, so they participate in the same DAG pass.
+- **Frequency/membership updates**: Equations targeting `<Group>_freq` nodes are treated like any other effect, so they participate in the same DAG pass. The native nested frequency neuron has a zero base and `[-1, 1]` bounds; the CSV percentage is the initial linked-list population share, not that neuron's base. Persistent savegame `CreateGrudge` inputs targeting a frequency are added separately on every pass.
 
 ---
 
@@ -95,14 +95,16 @@ Common behavioural patterns handled correctly:
      recomputes them when the player confirms the orders).
 
 3. **End of Turn** (`process_end_of_turn`):
-   - Advance policy runtime first: implementation fractions increase by minister effectiveness divided by implementation time, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
+   - Advance ministers first, then policy runtime: minister experience/effectiveness is updated before policy implementation fractions, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
+   - Roll finance-manager debt before evaluating the effect vector. The post-roll debt feeds `_effectivedebt_`, credit-rating updates, and situation inputs for the pass.
    - Advance the effect vector using the pre-turn policy values as source snapshots. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. A policy-owned ring retains its old head for the first process after a target change, then samples the pre-`Policy::NextTurn` value while the policy ramps. Saved rings contain raw samples, not minister-scaled live values.
       The executable writes a fresh ring sample for every applicable inertial link each turn — including a settled policy (a lowered IncomeTax keeps shifting 0-samples, and a raised TobaccoTax keeps shifting −0.8 samples until the leading-window average converges). The simulator mirrors this ordering and the observed one-pass target-change delay where the saved state is sufficient.
       `SIM_LoadGame::LoadEffects` restores raw effect histories and input throttles, but not the desired output throttle for every outgoing effect. The captured StateHealthService -> Health ring is frozen through no-op turns and begins ramping only after its explicit order; that timing is represented by the data-driven `frozen_until_order` calibration. Its post-order numeric samples, and the targeted Education/OilSupply/WorkerProductivity residuals, still depend on outgoing throttle state that cannot be reconstructed from the serialized policy or simvalue alone.
    - One parity calibration is applied to `BorderControls -> Immigration`: the shipped save pair implies that link is *not* ministerially scaled (its implied contribution is the raw −0.4 ring value). Every other policy effect on the simvalue nodes does carry the ministerial scale.
+    - Refresh the manager-owned hidden global neurons (`_global_socialism`, `_global_liberalism`, `_security_`, and `_winning_`) and their outputs before the ordinary neuron list. Active situation outputs are also refreshed from the stored pre-pass situation value before downstream neurons consume them.
     - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
     - Derive the income-group nodes (`_LowIncome`/`_MiddleIncome`/`_HighIncome`) from the voter population: each of the 2000 loaded voters' value drifts by the change in the policy + economy-node effects on its voter types, and native `SIM_Voter::UpdateIncome` reassigns income groups using the three overlapping sinusoidal windows with the configured 0.5 membership floor. The income node is the graph sum plus a contribution from that income group's voters, and the middle-income node additionally collapses on the middle-class squeeze (Equality below ~0.3). Income-group percentages count the selected native group membership rather than applying a raw `inincome` band cutoff.
-    - Advance the evidence-backed base party step from `SIM_Voter::ConsiderPartyMembership`: approval uses `(value + 1) * 0.5`, sympathy uses the shipped `VOTER_*` thresholds/gains, membership changes use the 0.2/0.7 thresholds and cross-party guard, and serialized party member histories use the pre-transition counts. Native manager-owned party lists, activist/poll modifiers, and frequency updates remain a documented parity boundary.
+    - Evaluate the native VoterType frequency neurons, including persistent frequency grudges, before refreshing the voter manager. Then advance the evidence-backed base party step from `SIM_Voter::ConsiderPartyMembership`: approval uses `(value + 1) * 0.5`, sympathy uses the shipped `VOTER_*` thresholds/gains, membership changes use the 0.2/0.7 thresholds and cross-party guard, and serialized party member histories use the pre-transition counts. Native manager-owned party lists and activist/poll modifiers remain a documented parity boundary.
     - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
     - Add the active-minister political-capital accrual and clamp at the
       corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.  When the
@@ -131,7 +133,8 @@ Common behavioural patterns handled correctly:
    - When enabled, event trigger chances are approximated from each file's
      `_random_` base constant plus its evaluated condition influences, rolls
      use the seeded RNG, and `CreateGrudge(...)` scripts apply one-shot
-     opinion shifts to voter values/frequencies and simvalues. Dilemmas
+     opinion shifts to voter values/simvalues while frequency targets are
+     retained as persistent nested-neuron inputs. Dilemmas
      fire when their latent influence sum crosses 0.5 and resolve with a
      seeded option choice. Plots and assassinations require the matching
      extremist pressure group's support to reach the file's `MinStrength`.

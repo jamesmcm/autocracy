@@ -149,9 +149,18 @@ def load_voter_types(root: Path) -> Tuple[Dict[str, NodeDefinition], List[Effect
                 display_name=f"{row[2].strip()} Membership",
                 description=f"Membership share for {row[2].strip()}",
                 category="VOTER_FREQ",
-                default=percentage,
-                minimum=0.0,
+                # The CSV percentage seeds the native linked-list membership
+                # count, not the nested SIM_Neuron's base value. The latter
+                # is constructed with a zero default and receives effects
+                # during the simulation pass.
+                default=0.0,
+                # Native SIM_VoterType stores this as the current value of
+                # its nested ``initial_voter_freq`` neuron.  That neuron is
+                # a normal [-1, 1] SIM_Neuron with a zero base; it is not
+                # the non-negative membership percentage from CSV.
+                minimum=-1.0,
                 maximum=1.0,
+                initial_percentage=percentage,
             )
             if influence_index is not None:
                 for cell in row[influence_index:]:

@@ -22,6 +22,7 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.policy_cost_histories == state.policy_cost_histories
     assert restored.policy_effect_history_started == state.policy_effect_history_started
     assert restored.political_capital_income == state.political_capital_income
+    assert restored.voter_frequency_grudges == state.voter_frequency_grudges
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
     reloaded = simulator.load_state(out_path)
@@ -82,8 +83,9 @@ def test_policy_introduction_exposes_effects_during_implementation():
     assert updated.policy_active[policy.name]
     assert updated.policy_implementations[policy.name] == pytest.approx(0.0)
     advanced = simulator.process_end_of_turn(updated, graph, data=data)
+    _, _, next_effectiveness = simulator._advance_ministers(state, data)
     expected_implementation = (
-        state.ministerial_effectiveness[policy.department] / policy.implementation_time
+        next_effectiveness[policy.department] / policy.implementation_time
     )
     assert advanced.policy_implementations[policy.name] == pytest.approx(
         expected_implementation
@@ -395,7 +397,7 @@ def test_policy_effect_inertia_respected():
     )
     inertia = max(1, int(alcohol_effect.inertia or 0.0))
     expected = sum(history.values[:inertia]) / inertia
-    expected *= simulator._policy_effect_scale(state, alcohol_effect, data)
+    expected *= simulator._policy_effect_scale(next_state, alcohol_effect, data)
     assert next_state.effects[alcohol_effect.effect_id] == pytest.approx(expected)
 
 

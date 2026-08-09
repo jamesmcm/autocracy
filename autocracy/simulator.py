@@ -8,7 +8,7 @@ import struct
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
 
@@ -419,6 +419,7 @@ def _seed_state_from_initial_save(
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
         state.values[name] = value
+    state.voter_frequency_grudges = save.voter_frequency_grudges.copy()
     state.voters = [_copy_voter(v) for v in save.voters]
     state.parties = {
         name: _copy_party(party) for name, party in save.parties.items()
@@ -616,6 +617,14 @@ def get_initial_state(
         political_capital_income=starting_capital,
         global_economy_position=setup.economic_cycle_start,
     )
+    # A fresh native VoterManager seeds its linked-list percentage from the
+    # CSV column, while the nested frequency neuron itself starts at zero.
+    for node in data.nodes.values():
+        if node.category != "VOTER_FREQ" or not node.initial_percentage:
+            continue
+        percentage_name = f"{node.name[:-5]}_perc"
+        state.voter_percentages[percentage_name] = node.initial_percentage
+        state.values[percentage_name] = node.initial_percentage
     state.policy_desired_throttles = state.policies.copy()
     save = _seed_state_from_initial_save(state, data)
     state.effects = _initialize_effect_memory(
@@ -1112,6 +1121,70 @@ VOTER_SYMBOL_NAMES = {
 # Income-group symbol -> the "_node" it drives.
 INCOME_GROUP_NODES = {11: "_HighIncome", 12: "_LowIncome", 13: "_MiddleIncome"}
 
+# These manager-owned neurons are not rows in simulation.csv, but the native
+# simulation keeps them in its hidden-neuron list.  They have a 0.5 base and
+# are recalculated after the effect vector, before the voter manager refreshes
+# the political group pairs.
+GLOBAL_POLITICAL_NODES = {
+    "_global_socialism": 0.5,
+    "_global_liberalism": 0.5,
+}
+GLOBAL_INCOMING_NODES = {
+    "_security_": 0.0,
+    "_winning_": 0.0,
+}
+
+
+def _advance_global_political_nodes(
+    new_values: Dict[str, float],
+    incoming_value: Callable[[str], float],
+) -> None:
+    """Recalculate the hidden global ideology neurons from their inputs."""
+    for name, default in GLOBAL_POLITICAL_NODES.items():
+        if name not in new_values:
+            continue
+        new_values[name] = _clamp(
+            _f32(_f32(default) + incoming_value(name)),
+            -1.0,
+            1.0,
+        )
+
+
+def _advance_global_incoming_nodes(
+    new_values: Dict[str, float],
+    incoming_value: Callable[[str], float],
+) -> None:
+    """Recalculate hidden manager neurons fed by ordinary effect links."""
+    for name, default in GLOBAL_INCOMING_NODES.items():
+        if name not in new_values:
+            continue
+        new_values[name] = _clamp(
+            _f32(_f32(default) + incoming_value(name)),
+            -1.0,
+            1.0,
+        )
+
+
+def _advance_native_political_groups(
+    state: SimulationState,
+    node_values: Optional[Dict[str, float]] = None,
+) -> None:
+    """Refresh the four party-ideology groups using native ``ForceVoter``."""
+    values = node_values if node_values is not None else state.values
+    socialism = values.get("_global_socialism", 0.5)
+    liberalism = values.get("_global_liberalism", 0.5)
+    for voter in state.voters:
+        socialist = _f32(
+            _f32(voter.initial_socialism + socialism) * _f32(0.5)
+        )
+        liberal = _f32(
+            _f32(voter.initial_liberalism + liberalism) * _f32(0.5)
+        )
+        voter.groups[0] = socialist
+        voter.groups[1] = _f32(_f32(1.0) - socialist)
+        voter.groups[6] = liberal
+        voter.groups[17] = _f32(_f32(1.0) - liberal)
+
 
 def _native_income_group_memberships(
     voter: Voter,
@@ -1354,6 +1427,7 @@ def _advance_voters_and_income_nodes(
     """
     if not state.voters:
         return
+    _advance_native_political_groups(state, new_values)
     _advance_party_memberships(state, data)
     context = {**new_values, **state.policies, **state.situations}
     source = source_policies if source_policies is not None else state.policies
@@ -1732,6 +1806,26 @@ def _advance_state_values(
     for policy_name in data.policies:
         refresh_outputs(policy_name, context)
 
+    # The native simulation calculates its hidden global neurons after the
+    # effect vector. Their outgoing links are refreshed immediately, while
+    # ordinary neurons continue through the current pass in their established
+    # order.
+    _advance_global_political_nodes(new_values, incoming_value)
+    _advance_global_incoming_nodes(new_values, incoming_value)
+    context = {**new_values, **state.policies, **state.situations}
+    refresh_outputs("_global_socialism", context)
+    refresh_outputs("_global_liberalism", context)
+    refresh_outputs("_security_", context)
+    refresh_outputs("_winning_", context)
+
+    # Situation managers are not ordinary DAG neurons, but their active
+    # outputs are refreshed before the simulation neuron list consumes them.
+    # Use the stored (pre-pass) situation value here; the newly calculated
+    # latent value is serialized only after the list walk.
+    context = {**new_values, **state.policies, **state.situations}
+    for situation_name in active_situations:
+        refresh_outputs(situation_name, context)
+
     for node in data.nodes.values():
         if node.category in _VOTER_NODE_CATEGORIES or node.category == "PLACEHOLDER":
             continue
@@ -1745,6 +1839,27 @@ def _advance_state_values(
         )
         context[node.name] = new_values[node.name]
         refresh_outputs(node.name, context)
+
+    # VoterType::freqval is the current value of the native nested neuron at
+    # VoterType + 0x380.  It is part of the simulation neuron list, so its
+    # base is the SIM_Neuron constructor's zero rather than the CSV
+    # percentage column.  The latter is used only to seed the linked-list
+    # population percentage at VoterType + 0x2c4.
+    for node in data.nodes.values():
+        if node.category != "VOTER_FREQ":
+            continue
+        context = {**new_values, **state.policies, **state.situations}
+        new_values[node.name] = _clamp(
+            _f32(
+                _f32(incoming_value(node.name))
+                + _f32(state.voter_frequency_grudges.get(node.name, 0.0))
+            ),
+            node.minimum,
+            node.maximum,
+        )
+        context[node.name] = new_values[node.name]
+        refresh_outputs(node.name, context)
+        state.voter_frequencies[node.name] = new_values[node.name]
 
     # The income-group "_" nodes are voter-derived: the graph sum above is
     # the base, and the voter population's collapse drags them down.
@@ -2324,7 +2439,44 @@ def process_end_of_turn(
     policy_cost_histories, policy_income_histories = _advance_policy_finance_histories(
         state, data
     )
-    runtime_state = _advance_policy_runtime(state, data)
+    # SIM_Simulation::NextTurn calls MinisterManager before PolicyManager and
+    # before the neural-effect vector.  Effect scales and implementation
+    # increments therefore use this turn's minister effectiveness, not the
+    # value stored at the beginning of the turn.
+    experience, competence, effectiveness = _advance_ministers(state, data)
+    minister_runtime_state = replace(
+        state,
+        ministerial_experience=experience,
+        ministerial_competence=competence,
+        ministerial_effectiveness=effectiveness,
+    )
+    runtime_state = _advance_policy_runtime(minister_runtime_state, data)
+    # FinanceManager::NextTurn rolls debt before the effect vector and hidden
+    # neuron pass.  Feed that post-roll balance into the simulation so
+    # _effectivedebt_ and DebtCrisis see the native value.
+    debt = runtime_state.debt + (
+        runtime_state.total_expenditure - runtime_state.total_income
+    )
+    if runtime_state.turns_since_credit > 0:
+        ratio_state = replace(runtime_state, values=state.values.copy(), debt=debt)
+        credit_rating = _credit_rating_from_debt_ratio(
+            _effective_debt_ratio(ratio_state, data)
+        )
+        turns_since_credit = 0
+    else:
+        credit_rating = runtime_state.credit_rating
+        turns_since_credit = 1
+    runtime_state = replace(
+        runtime_state,
+        debt=debt,
+        credit_rating=credit_rating,
+        turns_since_credit=turns_since_credit,
+        interest_rate=_interest_rate(
+            credit_rating,
+            data,
+            runtime_state.values.get("_global_interest_rates_", 0.5),
+        ),
+    )
     (
         new_values,
         new_effects,
@@ -2341,14 +2493,17 @@ def process_end_of_turn(
     # Ministers gain experience each turn (drifting the income/cost scalars)
     # and -- when the loyalty subsystem is enabled -- their satisfaction and
     # loyalty advance, which drives the per-turn political-capital income.
-    experience, competence, effectiveness = _advance_ministers(
-        runtime_state, data
-    )
     ministerial_value = runtime_state.ministerial_value.copy()
     ministerial_loyalty = runtime_state.ministerial_loyalty.copy()
     if config is not None and config.minister_loyalty:
+        # Loyalty thresholds see the newly advanced policy state, but the
+        # experience increment itself is applied only once above.
+        loyalty_state = replace(
+            runtime_state,
+            ministerial_experience=state.ministerial_experience,
+        )
         ministerial_value, ministerial_loyalty = _advance_minister_loyalty(
-            runtime_state, data
+            loyalty_state, data
         )
     capital_per_minister = data.sim_config.get("POLITICAL_CAPITAL_PER_MINISTER", 6.0)
     max_multiplier = data.sim_config.get("POLITICAL_CAPITAL_MAX_MULTIPLIER", 2.0)
@@ -2366,21 +2521,6 @@ def process_end_of_turn(
         0.0,
         capital_cap,
     )
-    # FinanceManager::NextTurn rolls the debt forward by the last finance
-    # lines (income - expenditure) and, every other turn, re-derives the
-    # credit rating from the debt-to-GDP ratio before computing the rate.
-    debt = runtime_state.debt + (
-        runtime_state.total_expenditure - runtime_state.total_income
-    )
-    if runtime_state.turns_since_credit > 0:
-        ratio_state = replace(runtime_state, values=state.values.copy(), debt=debt)
-        credit_rating = _credit_rating_from_debt_ratio(
-            _effective_debt_ratio(ratio_state, data)
-        )
-        turns_since_credit = 0
-    else:
-        credit_rating = runtime_state.credit_rating
-        turns_since_credit = 1
     new_state = SimulationState(
         country=runtime_state.country,
         turn=runtime_state.turn + 1,
@@ -2405,6 +2545,7 @@ def process_end_of_turn(
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
+        voter_frequency_grudges=runtime_state.voter_frequency_grudges.copy(),
         voters=[_copy_voter(v) for v in runtime_state.voters],
         parties={
             name: _copy_party(party)
@@ -2599,6 +2740,7 @@ def apply_actions(
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
+        voter_frequency_grudges=state.voter_frequency_grudges.copy(),
         voters=[_copy_voter(v) for v in state.voters],
         parties={
             name: _copy_party(party) for name, party in state.parties.items()
@@ -2743,6 +2885,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "voter_values": state.voter_values,
         "voter_percentages": state.voter_percentages,
         "voter_frequencies": state.voter_frequencies,
+        "voter_frequency_grudges": state.voter_frequency_grudges,
         "voters": [
             {
                 "groups": dict(v.groups),
@@ -2850,6 +2993,10 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         },
         voter_frequencies={
             k: float(v) for k, v in dict(payload.get("voter_frequencies", {})).items()
+        },
+        voter_frequency_grudges={
+            k: float(v)
+            for k, v in dict(payload.get("voter_frequency_grudges", {})).items()
         },
         voters=[
             Voter(
