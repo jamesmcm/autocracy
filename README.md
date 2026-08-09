@@ -64,7 +64,8 @@ political capital, total income, total expenditure, and net balance. The
   saves: the executable restores raw histories and input throttles, but does
   not serialize every outgoing effect's desired throttle. Targeted
   policy/simvalue ring residuals therefore remain until that runtime state can
-  be recovered.
+  be recovered. The captured StateHealthService ring's no-op freeze is
+  reproduced until an explicit order starts that policy's ring.
 - State snapshots include situations, active situations, hidden global
   neurons and their 33-slot histories, voter histories, party metadata/history rings, full per-voter
   party/sympathy inputs, policy runtime/multiplier fields, delayed policy
@@ -150,12 +151,13 @@ bootstrap a simulation from an in-game snapshot.
   `ViolentCrimeRate` value (which is inconsistent with the game's own inputs).
 - Finance is live-recomputed, including debt interest and the global-interest
   neuron; save parsing also preserves each policy's 20-entry cost/income
-  history ring. The drastic replay's aligned final residual is about -1,245
+  history ring. The drastic replay's aligned final residual is about -1,229
   income / +80 expenditure under the current pre-policy effect sampling.
 - The remaining continuous-state residuals are concentrated in outgoing
-  effect-ring throttle/load state and the non-serialized global-economy random
-  cursor. The current model retains the evidence-backed one-pass policy delay
-  and pre-policy source ordering documented in `SIMULATION.md`; the finance
+  effect-ring throttle/load state (including the post-order StateHealth ramp)
+  and the non-serialized global-economy random cursor. The current model
+  retains the evidence-backed ring freeze, one-pass policy delay, and
+  pre-policy source ordering documented in `SIMULATION.md`; the finance
   trade-off is measured in `parity_cases/DRASH_NOTES.md`.
 - Base party/sympathy membership transitions now use the binary-confirmed
   approval transform, simconfig thresholds, party-type lookup, and serialized

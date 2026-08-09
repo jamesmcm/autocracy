@@ -10,6 +10,9 @@
   "frozen_rings": {
     "StateSchools -> Education": true
   },
+  "frozen_until_order": {
+    "StateHealthService -> Health": true
+  },
   "voter_collapse": {
     "groups": {
       "MiddleIncome": {"slope": 6.3, "threshold": 0.3},

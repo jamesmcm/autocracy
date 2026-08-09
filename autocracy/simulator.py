@@ -1583,14 +1583,19 @@ def _advance_state_values(
             # to StateHealthService in the captured turn-12 save).
             if state.policy_effect_history_delays.get(source, 0) > 0:
                 return False
+        effect_key = f"{effect.source} -> {effect.target}"
         # Data-driven frozen-ring exemptions (calibration.json): the
         # serialized StateSchools -> Education ring is frozen at the pre-game
         # level in every save while the policy sits settled, so leave those
         # specific links untouched.
-        if data.calibration.get("frozen_rings", {}).get(
-            f"{effect.source} -> {effect.target}"
-        ):
+        if data.calibration.get("frozen_rings", {}).get(effect_key):
             return False
+        # A smaller class of rings is frozen only until its source policy has
+        # received an explicit order. StateHealthService is the captured
+        # example: its ring remains at .211 across no-op saves, then resumes
+        # its implementation ramp after the turn-8 order.
+        if data.calibration.get("frozen_until_order", {}).get(effect_key):
+            return state.policy_effect_history_started.get(source, False)
         return True
 
     pre_policy_values = source_policies or state.policies
@@ -2377,6 +2382,7 @@ def process_end_of_turn(
             for name, remaining in runtime_state.policy_effect_history_delays.items()
             if remaining > 1
         },
+        policy_effect_history_started=runtime_state.policy_effect_history_started.copy(),
         ministerial_effectiveness=effectiveness,
         ministerial_competence=competence,
         ministerial_experience=experience,
@@ -2459,6 +2465,7 @@ def apply_actions(
     policy_implementations = state.policy_implementations.copy()
     effect_throttles = state.effect_throttles.copy()
     policy_effect_history_delays = state.policy_effect_history_delays.copy()
+    policy_effect_history_started = state.policy_effect_history_started.copy()
     capital = state.political_capital
     for action in actions:
         policy = data.policies.get(action.policy_name)
@@ -2492,6 +2499,7 @@ def apply_actions(
                 f"Insufficient political capital for {policy.name} [{action_type}] (cost {cost}, available {capital})"
             )
         capital -= cost
+        policy_effect_history_started[policy.name] = True
         # The game keeps the policy neuron's current value (<val>) separate
         # from the slider target (<targ>) until the next simulation step.
         # Keep that distinction in the action-phase state as well.
@@ -2563,6 +2571,7 @@ def apply_actions(
         effect_throttles=effect_throttles,
         policy_desired_throttles=policy_desired_throttles,
         policy_effect_history_delays=policy_effect_history_delays,
+        policy_effect_history_started=policy_effect_history_started,
         ministerial_effectiveness=state.ministerial_effectiveness.copy(),
         ministerial_competence=state.ministerial_competence.copy(),
         ministerial_experience=state.ministerial_experience.copy(),
@@ -2734,6 +2743,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "effect_throttles": state.effect_throttles,
         "policy_desired_throttles": state.policy_desired_throttles,
         "policy_effect_history_delays": state.policy_effect_history_delays,
+        "policy_effect_history_started": state.policy_effect_history_started,
         "ministerial_effectiveness": state.ministerial_effectiveness,
         "ministerial_competence": state.ministerial_competence,
         "ministerial_experience": state.ministerial_experience,
@@ -2870,6 +2880,10 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         policy_effect_history_delays={
             k: int(v)
             for k, v in dict(payload.get("policy_effect_history_delays", {})).items()
+        },
+        policy_effect_history_started={
+            k: bool(v)
+            for k, v in dict(payload.get("policy_effect_history_started", {})).items()
         },
         ministerial_effectiveness={
             k: float(v)

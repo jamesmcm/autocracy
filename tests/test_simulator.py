@@ -12,6 +12,7 @@ from autocracy.savegame import load_state_from_savegame, parse_savegame
 
 def test_state_serialization_round_trip(tmp_path):
     state, _ = simulator.get_initial_state("uk")
+    state.policy_effect_history_started["StateHealthService"] = True
     payload = simulator.state_to_dict(state)
     restored = simulator.state_from_dict(payload)
     assert restored.country == state.country
@@ -19,6 +20,7 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.policy_desired_throttles == state.policy_desired_throttles
     assert restored.policy_income_histories == state.policy_income_histories
     assert restored.policy_cost_histories == state.policy_cost_histories
+    assert restored.policy_effect_history_started == state.policy_effect_history_started
     assert restored.political_capital_income == state.political_capital_income
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
@@ -174,6 +176,30 @@ def test_delayed_policy_ring_samples_after_one_ramp_turn():
 
     assert first_head == pytest.approx(original)
     assert second_head != pytest.approx(original)
+
+
+def test_state_health_ring_waits_for_an_explicit_order():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    original = next(
+        history.values[0]
+        for history in state.effect_histories
+        if (history.source, history.target) == ("StateHealthService", "Health")
+    )
+
+    advanced = simulator.process_end_of_turn(state, graph, data=data)
+    current = next(
+        history.values[0]
+        for history in advanced.effect_histories
+        if (history.source, history.target) == ("StateHealthService", "Health")
+    )
+
+    assert current == pytest.approx(original)
+    assert not advanced.policy_effect_history_started.get(
+        "StateHealthService", False
+    )
 
 
 def test_year_neuron_is_monotonic_quarter_counter():

@@ -304,9 +304,10 @@ the global-interest neuron offset (`_global_interest_rates_ - 0.5`) to the
 credit-rating factor before interpolating `INTEREST_RATE_MIN/MAX`; the Python
 rate helper now models that input.  The final capture is serialized as game
 turn 12 in `turn11_initial.xml`, and the replay harness now aligns by the XML
-turn field.  With the current ring ordering its final comparison is income
--1,244.6 and expenditure +80.1; the earlier pre-policy sampling baseline was
-about -1,225 and -32.5.  The remaining material state residual is the captured late-turn
+turn field.  With the current ring ordering and the captured StateHealth
+freeze-until-order timing, its final comparison is income about -1,229.3 and
+expenditure +79.8; the earlier pre-policy sampling baseline was about -1,225
+and -32.5.  The remaining material state residual is the captured late-turn
 `ViolentCrimeRate` anomaly, followed by targeted inertial-ring and voter-party
 model gaps listed below.
 
@@ -335,10 +336,12 @@ A broad pre-policy source rule is now retained because the native ordering and
 the captured `StateHealthService -> Health` ring support sampling the current
 policy value before `Policy::NextTurn`. A one-pass per-policy delay preserves
 the old ring head immediately after a slider order. This improves the targeted
-ring heads, but moves the aligned final expenditure error from the earlier
-`-32.5` baseline to about `+80`; the trade-off is documented rather than hidden
-behind a named-policy exception. Effect-level desired throttles are not
-serialized, so no stronger global ring rule is justified from the captures.
+ring heads, and the StateHealthService ring now remains at its captured .211
+value through no-op turns until the turn-8 order. The post-order raw samples
+still differ because each outgoing effect has missing runtime throttle state;
+the aligned final residual is now about `-1,229` income / `+80` expenditure.
+Effect-level desired throttles are not serialized, so no stronger global ring
+rule is justified from the captures.
 
 ### Hidden manager histories and native follow-up (current)
 
@@ -375,6 +378,9 @@ root).  This covers:
 * `effect_applicability`: which links stay live when their policy is inactive.
 * `frozen_rings`: which settled policy rings never shift (`StateSchools->
   Education`).
+* `frozen_until_order`: which captured policy rings remain frozen until an
+  explicit order starts their native runtime ramp (`StateHealthService ->
+  Health`).
 * `voter_collapse`: the equality-collapse slopes per voter group, the income
   `squeeze` per node (slope/threshold/saturation), the voter contribution and
   the GDP-crash parameters.

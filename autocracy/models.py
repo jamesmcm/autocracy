@@ -249,6 +249,10 @@ class SimulationState:
     # policy value on subsequent passes, even when a long implementation time
     # means the target has not been reached yet.
     policy_effect_history_delays: Dict[str, int] = field(default_factory=dict)
+    # Some serialized policy rings are held at their load-time value until
+    # the native policy manager receives an explicit order for that policy.
+    # This records which such sources have crossed that runtime boundary.
+    policy_effect_history_started: Dict[str, bool] = field(default_factory=dict)
     ministerial_effectiveness: Dict[str, float] = field(default_factory=dict)
     ministerial_competence: Dict[str, float] = field(default_factory=dict)
     political_capital_income: float = 0.0
