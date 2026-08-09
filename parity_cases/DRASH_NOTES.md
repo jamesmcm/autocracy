@@ -257,11 +257,12 @@ income err 135 (was 606 before the CitizenshipTests fix).
   inconsistent with the game's own input data, which implies ~0.42; the sim's
   VCR matches at every aligned point), Education (0.048, the
   PrivateSchools->Education ring), Health (0.034, the StateHealthService->
-  Health ring), OilSupply (0.030), WorkerProductivity (0.030).  The remaining
-  drifts are all the same ring-timing/source-model class: the game freezes or
-  times its inertial rings differently from the simulator's current targeted
-  policy-boundary rule, and broad freezes regress the income lines, so each
-  needs a targeted case.
+  Health ring), and WorkerProductivity (0.030). OilSupply is exact at the
+  aligned replay turns. The remaining drifts are all the same
+  ring-timing/source-model class: the game freezes or times its inertial rings
+  differently from the simulator's current targeted policy-boundary rule, and
+  broad freezes regress the income lines, so each remaining case needs direct
+  evidence.
 * **Situation latents** (24 diffs): GeneralStrike (-0.083) is the
   `Socialist_perc` party-model gap; RaceRiots/HospitalOvercrowding are driven
   by the anomalous game t12 VCR; SkillsShortage/TeacherShortage follow the
@@ -532,3 +533,24 @@ manager timing. The captured `_winning_` value is still an event-manager
 runtime result absent from the turn-zero save, and the global-economy random
 cursor remains non-serialized. The static injector preflight remains the safe
 boundary for gdb/LD_PRELOAD work; the installed game is not launched.
+
+### Native voter-list ordering fix (current)
+
+The percentage pass now preserves the native ordering boundary instead of
+using the frequency value that was just calculated. `SIM_Voter::PreSimulatedNextTurn`
+and `ReconsiderVoterGroupMemberships` test an ordinary group's raw membership
+weight plus the saved `VoterType::freqval` against the manager threshold. The
+four ideology links are different: `SIM_Voter::NextTurn` overwrites them via
+`ForceVoter`, whose linked-list test uses the raw forced coefficient and no
+frequency base. The simulator snapshots all saved frequency values before the
+frequency neurons mutate and uses that snapshot for ordinary groups.
+
+The captured load boundary also matters. On the first turn-zero transition,
+the native income percentages remain at their serialized zero values even
+though `UpdateIncome` has selected the overlapping income curves; subsequent
+passes count the selected income memberships. The focused replay now reduces
+the voter-percentage error to a maximum of `0.001` through turn three and
+approximately `0.002` at the final capture. A regression test locks the
+previous-frequency criterion on the Commuter list. This is a deterministic
+membership fix; the non-serialized party lists, activist/poll modifiers, and
+per-voter income host links remain open manager state.

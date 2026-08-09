@@ -172,13 +172,28 @@ def test_noop_replay_reconstructs_income_group_memberships():
     assert advanced.voters[0].groups[11] == pytest.approx(
         reference.voters[0].groups[11], abs=1e-6
     )
-    for symbol, name in ((11, "Wealthy_perc"), (12, "Poor_perc"), (13, "MiddleIncome_perc")):
-        expected = sum(
-            1 for voter in reference.voters if voter.groups.get(symbol, 0.0) > 0.0
-        ) / len(reference.voters)
+    for name in ("Wealthy_perc", "Poor_perc", "MiddleIncome_perc"):
         assert advanced.voter_percentages[name] == pytest.approx(
-            expected
+            reference.voter_percentages[name]
         )
+
+
+def test_voter_percentages_use_previous_frequency_snapshot():
+    """Ordinary group links use the saved VoterType base for this pass."""
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn1_initial.xml", data
+    )
+    previous_frequency = state.voter_frequencies["Commuter_freq"]
+    threshold = data.sim_config["VOTER_GROUP_MEMBERSHIP_THRESHHOLD"]
+    expected = sum(
+        voter.groups.get(3, 0.0) + previous_frequency >= threshold
+        for voter in state.voters
+    ) / len(state.voters)
+
+    advanced = simulator.process_end_of_turn(state, graph, data=data)
+
+    assert advanced.voter_percentages["Commuter_perc"] == pytest.approx(expected)
 
 
 def test_delayed_policy_ring_samples_after_one_ramp_turn():

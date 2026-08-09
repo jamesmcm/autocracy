@@ -77,9 +77,12 @@ political capital, total income, total expenditure, and net balance. The
   the manager's non-serialized per-voter host contribution remains a runtime
   boundary.
 - VoterType frequency neurons use the native zero-base `[-1, 1]` pass; CSV
-  membership percentages seed linked-list population counts, while persistent
-  `CreateGrudge(..., <group>_freq, ...)` inputs are restored from saves and
-  included on every pass.
+  membership percentages are calculated from the native linked lists. Ordinary
+  groups use the previous saved `<group>_freq` value as their membership base,
+  while the four `ForceVoter` ideology links use their raw forced weights;
+  persistent `CreateGrudge(..., <group>_freq, ...)` inputs are restored from
+  saves and included on every pass. The captured turn-zero income percentages
+  retain the game's pre-first-pass startup state.
 - When available, `get_initial_state` seeds node and policy values from
   `gamedata/saves/<country>0.xml`, matching the shipped baseline.
 - Policy runtime keeps the current neuron value (`<val>`) separate from the
@@ -179,7 +182,8 @@ bootstrap a simulation from an in-game snapshot.
 
 ### Next parity work
 
-- Reduce targeted Education/Health/OilSupply/WorkerProductivity ring drift.
+- Reduce targeted Education/Health/WorkerProductivity ring drift; OilSupply is
+  exact in the current aligned replay.
 - Reconstruct the remaining party/sympathy manager state (linked lists and
   activist/poll updates) plus the non-serialized per-voter income-neuron host
   links from static binary analysis and captured saves.

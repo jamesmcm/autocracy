@@ -1134,6 +1134,11 @@ VOTER_SYMBOL_NAMES = {
 }
 # Income-group symbol -> the "_node" it drives.
 INCOME_GROUP_NODES = {11: "_HighIncome", 12: "_LowIncome", 13: "_MiddleIncome"}
+# These four links are overwritten by ``SIM_Voter::NextTurn`` through
+# ``ForceVoter`` after the generic frequency-based membership refresh.  Their
+# linked-list membership therefore follows the raw forced coefficient, not
+# the VoterType ``freqval`` base used by the other ordinary groups.
+POLITICAL_GROUP_SYMBOLS = {0, 1, 6, 17}
 
 # These manager-owned neurons are not rows in simulation.csv, but the native
 # simulation keeps them in its hidden-neuron list.  They have a 0.5 base and
@@ -1427,6 +1432,7 @@ def _advance_voters_and_income_nodes(
     data: SimulationData,
     new_values: Dict[str, float],
     source_policies: Optional[Dict[str, float]] = None,
+    previous_voter_frequencies: Optional[Dict[str, float]] = None,
 ) -> None:
     """Advance the voter population and re-derive the income ``_`` nodes.
 
@@ -1481,6 +1487,11 @@ def _advance_voters_and_income_nodes(
 
     income_sums: Dict[int, float] = {}
     income_weights: Dict[int, float] = {}
+    membership_frequencies = (
+        previous_voter_frequencies
+        if previous_voter_frequencies is not None
+        else state.voter_frequencies
+    )
     membership_threshold = data.sim_config.get(
         "VOTER_GROUP_MEMBERSHIP_THRESHHOLD", 0.5
     )
@@ -1548,23 +1559,47 @@ def _advance_voters_and_income_nodes(
         new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
 
     # The voter-type percentages are the population share in each native
-    # linked-list group (the game's CalculatePercentage).  Ordinary groups
-    # use the configured membership threshold; income groups are explicitly
-    # assigned by UpdateIncome and therefore count every selected member,
-    # including a membership weight below 0.5.
+    # linked-list group (the game's CalculatePercentage).  On the first
+    # simulated pass after loading, the links still reflect LoadVoters' raw
+    # ForceVoter calls.  Later passes use the native PreSimulatedNextTurn
+    # criterion: the raw group coefficient plus the VoterType ``freqval``
+    # base must reach the manager threshold.  The pending-list/application
+    # timing is observable in the captured saves: the first pass retains the
+    # loaded membership snapshot, while the next pass reflects the refreshed
+    # frequency bases.
     n_voters = len(state.voters)
     if n_voters:
         for symbol, name in VOTER_SYMBOL_NAMES.items():
             if symbol in INCOME_GROUP_NODES:
+                # The turn-zero UK save is before the first VoterType
+                # percentage pass, so its income percentages are deliberately
+                # still zero even though UpdateIncome has selected a curve.
+                # Preserve that native startup state for the first transition.
+                loaded_percentage = state.voter_percentages.get(
+                    f"{name}_perc", 0.0
+                )
+                if state.turn == 0 and loaded_percentage <= EPSILON:
+                    continue
                 count = sum(
                     1
                     for voter in state.voters
                     if voter.groups.get(symbol, 0.0) > 0.0
                 )
             else:
-                count = sum(
-                    1 for voter in state.voters if voter.groups.get(symbol, 0.0) > 0.5
-                )
+                if state.turn == 0 or symbol in POLITICAL_GROUP_SYMBOLS:
+                    count = sum(
+                        1
+                        for voter in state.voters
+                        if voter.groups.get(symbol, 0.0) > membership_threshold
+                    )
+                else:
+                    frequency = membership_frequencies.get(f"{name}_freq", 0.0)
+                    count = sum(
+                        1
+                        for voter in state.voters
+                        if voter.groups.get(symbol, 0.0) + frequency
+                        >= membership_threshold
+                    )
             state.voter_percentages[f"{name}_perc"] = count / n_voters
 
 
@@ -1840,6 +1875,7 @@ def _advance_state_values(
     for situation_name in active_situations:
         refresh_outputs(situation_name, context)
 
+    previous_voter_frequencies = state.voter_frequencies.copy()
     for node in data.nodes.values():
         if node.category in _VOTER_NODE_CATEGORIES or node.category == "PLACEHOLDER":
             continue
@@ -1894,7 +1930,11 @@ def _advance_state_values(
     # The income-group "_" nodes are voter-derived: the graph sum above is
     # the base, and the voter population's collapse drags them down.
     _advance_voters_and_income_nodes(
-        state, data, new_values, source_policies=source_policies
+        state,
+        data,
+        new_values,
+        source_policies=source_policies,
+        previous_voter_frequencies=previous_voter_frequencies,
     )
 
     # Situation values are serialized after their input links have advanced.
