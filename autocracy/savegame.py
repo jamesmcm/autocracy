@@ -9,7 +9,13 @@ import xml.etree.ElementTree as ET
 import networkx as nx
 
 from . import simulator
-from .models import EffectHistory, SimulationData, SimulationState, Voter
+from .models import (
+    EffectHistory,
+    PartyState,
+    SimulationData,
+    SimulationState,
+    Voter,
+)
 
 ENCODING = "latin-1"
 DEFAULT_TOLERANCE = 1e-3
@@ -38,6 +44,7 @@ class SaveGame:
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
     voters: List[Voter] = field(default_factory=list)
+    parties: Dict[str, PartyState] = field(default_factory=dict)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
     policy_active: Dict[str, bool] = field(default_factory=dict)
     policy_cost_multipliers: Dict[str, float] = field(default_factory=dict)
@@ -143,6 +150,21 @@ def _voter_int(voter_elem: ET.Element, tag: str) -> int:
         return int(float(voter_elem.findtext(tag, default="0")))
     except ValueError:
         return 0
+
+
+def _history_ints(text: Optional[str]) -> List[int]:
+    if not text:
+        return []
+    values: List[int] = []
+    for chunk in text.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            values.append(int(float(chunk)))
+        except ValueError:
+            continue
+    return values
 
 
 def _history_values(text: Optional[str]) -> List[float]:
@@ -356,6 +378,23 @@ def parse_savegame(path: str | Path) -> SaveGame:
     voter_values: Dict[str, float] = {}
     voter_percentages: Dict[str, float] = {}
     voter_frequencies: Dict[str, float] = {}
+    parties: Dict[str, PartyState] = {}
+    parties_elem = root.find("parties")
+    if parties_elem is not None:
+        for party_elem in parties_elem.findall("party"):
+            name = (party_elem.findtext("guiname") or "").strip()
+            if not name:
+                continue
+            parties[name] = PartyState(
+                name=name,
+                status=_voter_int(party_elem, "status"),
+                party_type=_voter_int(party_elem, "type"),
+                members_last_turn=_voter_int(party_elem, "memberslastturn"),
+                member_history=_history_ints(party_elem.findtext("member_history")),
+                activist_history=_history_ints(
+                    party_elem.findtext("activist_history")
+                ),
+            )
     votertypes_elem = root.find("votertypes")
     if votertypes_elem is not None:
         for votertype in votertypes_elem.findall("votertype"):
@@ -520,6 +559,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         voter_percentages=voter_percentages,
         voter_frequencies=voter_frequencies,
         voters=voters,
+        parties=parties,
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=policy_cost_multipliers,
@@ -580,6 +620,14 @@ def state_from_savegame(
         replace(v, groups=dict(v.groups), organizations=list(v.organizations))
         for v in save.voters
     ]
+    state.parties = {
+        name: replace(
+            party,
+            member_history=list(party.member_history),
+            activist_history=list(party.activist_history),
+        )
+        for name, party in save.parties.items()
+    }
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
     state.policy_cost_histories = {

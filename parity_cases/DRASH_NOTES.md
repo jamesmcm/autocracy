@@ -274,9 +274,9 @@ income err 135 (was 606 before the CitizenshipTests fix).
   *other* groups' percentages drift in the game because the voters' party/
   sympathy memberships change over the run, which the static loaded
   memberships do not reproduce. The save bridge now retains each voter's
-  serialized ideology, sympathy, party, and organization fields; the remaining
-  blocker is rebuilding the native manager-owned membership lists from those
-  inputs.
+  serialized ideology, sympathy, party, and organization fields plus the
+  top-level party history rings; the remaining blocker is rebuilding the native
+  manager-owned membership lists from those inputs.
 * **Voter frequencies** (12 diffs): the `_freq` neurons drift with the voter
   dynamics; the sim keeps the loaded values.
 * **Minister satisfaction** (11 diffs): `0.5 + average` of the two sympathised

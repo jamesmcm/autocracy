@@ -68,6 +68,16 @@ def snapshot_from_savegame(save: SaveGame) -> Dict[str, object]:
             "percentages": _sorted_values(save.voter_percentages),
             "frequencies": _sorted_values(save.voter_frequencies),
         },
+        "parties": {
+            name: {
+                "status": party.status,
+                "party_type": party.party_type,
+                "members_last_turn": party.members_last_turn,
+                "member_history": list(party.member_history),
+                "activist_history": list(party.activist_history),
+            }
+            for name, party in sorted(save.parties.items())
+        },
         "policy_runtime": {
             "implementations": _sorted_values(save.policy_implementations),
             "active": _sorted_values(save.policy_active),

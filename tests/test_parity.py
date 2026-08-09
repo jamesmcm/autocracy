@@ -24,6 +24,11 @@ def test_save_snapshot_extracts_full_effect_memory():
     snapshot = snapshot_from_savegame(parse_savegame("gamedata/saves/uk0.xml"))
     effect_memory = snapshot["effect_memory"]
     assert snapshot["political_capital"] == pytest.approx(26.0)
+    assert snapshot["parties"]["The Republicans"]["member_history"][:3] == [
+        422,
+        434,
+        407,
+    ]
     assert effect_memory["record_count"] == 303
     assert effect_memory["history_lengths"] == [33]
     assert len(effect_memory["records"]) == 303

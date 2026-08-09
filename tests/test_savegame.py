@@ -53,9 +53,17 @@ def test_parse_savegame_preserves_voter_runtime_fields():
 
     party_voter = next(v for v in save.voters if v.party == "The National Front")
     assert party_voter.opposition_sympathy == pytest.approx(1.0)
+    national_front = save.parties["The National Front"]
+    assert national_front.status == 2
+    assert national_front.party_type == 1
+    assert national_front.member_history[:3] == [422, 434, 407]
+    assert national_front.activist_history[:3] == [55, 52, 59]
 
 
-@pytest.mark.skipif(not (Path("parity_cases/dem3saves/turn0_initial.xml")).exists(), reason="parity saves missing")
+@pytest.mark.skipif(
+    not Path("parity_cases/dem3saves/turn0_initial.xml").exists(),
+    reason="parity saves missing",
+)
 def test_state_snapshot_round_trips_voter_runtime_fields():
     from autocracy.simulator import state_from_dict, state_to_dict
 
@@ -65,6 +73,9 @@ def test_state_snapshot_round_trips_voter_runtime_fields():
         state.voters[0].voting_tech
     )
     assert restored.voters[0].organizations == state.voters[0].organizations
+    assert restored.parties["The National Front"].member_history == state.parties[
+        "The National Front"
+    ].member_history
 
 
 def test_parse_savegame_keeps_policy_target_separate_from_current_value(tmp_path):

@@ -80,7 +80,10 @@ individual ideology inputs, sympathy fields, party pointer, and organization
 list before `SIM_VoterManager::PostLoad()` rebuilds manager-owned membership
 lists. The XML therefore contains enough per-voter inputs to seed a model, but
 not the manager's live party/group lists; the Python save bridge now preserves
-the serialized inputs instead of silently discarding them.
+the serialized inputs instead of silently discarding them. It also retains the
+top-level party definitions and their member/activist history rings; those
+history values are serialized, while the live member lists remain native
+manager state.
 
 ## What the prototype does
 

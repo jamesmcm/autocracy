@@ -21,6 +21,7 @@ from .models import (
     PolicyAction,
     PolicyActionOption,
     PolicyDefinition,
+    PartyState,
     SimulationConfig,
     SimulationData,
     SimulationState,
@@ -56,6 +57,15 @@ def _copy_voter(voter: Voter) -> Voter:
         voter,
         groups=dict(voter.groups),
         organizations=list(voter.organizations),
+    )
+
+
+def _copy_party(party: PartyState) -> PartyState:
+    """Copy serialized party history rings without sharing mutable lists."""
+    return replace(
+        party,
+        member_history=list(party.member_history),
+        activist_history=list(party.activist_history),
     )
 
 
@@ -407,6 +417,9 @@ def _seed_state_from_initial_save(
         state.voter_frequencies[name] = value
         state.values[name] = value
     state.voters = [_copy_voter(v) for v in save.voters]
+    state.parties = {
+        name: _copy_party(party) for name, party in save.parties.items()
+    }
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
     state.policy_cost_histories = {
@@ -2196,6 +2209,10 @@ def process_end_of_turn(
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
         voters=[_copy_voter(v) for v in runtime_state.voters],
+        parties={
+            name: _copy_party(party)
+            for name, party in runtime_state.parties.items()
+        },
         policy_implementations=runtime_state.policy_implementations.copy(),
         policy_active=runtime_state.policy_active.copy(),
         policy_cost_multipliers=runtime_state.policy_cost_multipliers.copy(),
@@ -2370,6 +2387,9 @@ def apply_actions(
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
         voters=[_copy_voter(v) for v in state.voters],
+        parties={
+            name: _copy_party(party) for name, party in state.parties.items()
+        },
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=state.policy_cost_multipliers.copy(),
@@ -2529,6 +2549,16 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
             }
             for v in state.voters
         ],
+        "parties": {
+            name: {
+                "status": party.status,
+                "party_type": party.party_type,
+                "members_last_turn": party.members_last_turn,
+                "member_history": list(party.member_history),
+                "activist_history": list(party.activist_history),
+            }
+            for name, party in state.parties.items()
+        },
         "policy_implementations": state.policy_implementations,
         "policy_active": state.policy_active,
         "policy_cost_multipliers": state.policy_cost_multipliers,
@@ -2621,6 +2651,21 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
             )
             for v in payload.get("voters", [])
         ],
+        parties={
+            str(name): PartyState(
+                name=str(name),
+                status=int(value.get("status", 0)),
+                party_type=int(value.get("party_type", 0)),
+                members_last_turn=int(value.get("members_last_turn", 0)),
+                member_history=[
+                    int(item) for item in value.get("member_history", [])
+                ],
+                activist_history=[
+                    int(item) for item in value.get("activist_history", [])
+                ],
+            )
+            for name, value in dict(payload.get("parties", {})).items()
+        },
         policy_implementations={
             k: float(v)
             for k, v in dict(payload.get("policy_implementations", {})).items()

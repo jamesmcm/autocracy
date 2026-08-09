@@ -66,10 +66,10 @@ political capital, total income, total expenditure, and net balance. The
   policy/simvalue ring residuals therefore remain until that runtime state can
   be recovered.
 - State snapshots include situations, active situations, hidden global
-  neurons, voter histories, full per-voter party/sympathy inputs, policy
-  runtime/multiplier fields, delayed policy throttles, ministerial
-  effectiveness, political-capital points, policy finance history rings, and
-  effect histories.
+  neurons, voter histories, party metadata/history rings, full per-voter
+  party/sympathy inputs, policy runtime/multiplier fields, delayed policy
+  throttles, ministerial effectiveness, political-capital points, policy
+  finance history rings, and effect histories.
 - When available, `get_initial_state` seeds node and policy values from
   `gamedata/saves/<country>0.xml`, matching the shipped baseline.
 - Policy runtime keeps the current neuron value (`<val>`) separate from the

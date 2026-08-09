@@ -187,6 +187,18 @@ class Voter:
 
 
 @dataclass(slots=True)
+class PartyState:
+    """Serialized party metadata and the game's short history rings."""
+
+    name: str
+    status: int = 0
+    party_type: int = 0
+    members_last_turn: int = 0
+    member_history: List[int] = field(default_factory=list)
+    activist_history: List[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class SimulationState:
     """Mutable per-turn state for a single country."""
 
@@ -217,6 +229,9 @@ class SimulationState:
     # The individual voter population (loaded from the save), used to derive
     # the ``_LowIncome``/``_MiddleIncome``/``_HighIncome`` income nodes.
     voters: List[Voter] = field(default_factory=list)
+    # Serialized party metadata. The live party and voter membership lists
+    # remain manager-owned and are not present in the XML save.
+    parties: Dict[str, PartyState] = field(default_factory=dict)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
     policy_active: Dict[str, bool] = field(default_factory=dict)
     policy_cost_multipliers: Dict[str, float] = field(default_factory=dict)
