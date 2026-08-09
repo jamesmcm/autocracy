@@ -332,6 +332,29 @@ set-policy/next-turn/save-state interface.  Either round-trips through the
 existing `savegame.py` XML parser.  The trade-off is weight (needs the
 installed game + Xvfb) and version coupling to the binary's symbols.
 
+### gdb-driving prototype (`gamedrive/`)
+
+`gamedrive/gdb_drive.py` + `gamedrive/harness.gdb` launch the installed game
+under Xvfb + gdb and prove the driving is reachable:
+
+* the game stops at `mainLoop()` before the graphics resize crash that
+  otherwise kills it under Xvfb (the crash is `APP_Game::NotifyResized` ->
+  `GEngine::CreateRenderTarget`, a GL/resize issue);
+* `SIM_GetSimulation()` returns the live singleton (0xa38360);
+* `SIM_Simulation::NextTurn()` is callable from gdb but SIGFPEs without a
+  country loaded (`SIM_Names::GetRandomFullName` divides by an uninitialized
+  value), confirming a country must be loaded first.
+
+**Blockers to a full round-trip** (documented in `gamedrive/README.md`): the
+`SIM_GetLoadGame()`/`SIM_GetSaveGame()` getters are static inline (no symbol)
+and their singletons are lazily constructed; gdb has no C++ type info (the
+debug_info is function-level), so the class layouts must be reverse-engineered;
+and direct calls into `OpenSavedFile`/`LoadGameData` from the breakpoint hang.
+Completing it needs the class member offsets (from the vtables/constructors)
+plus a `SIM_Simulation::Initialise` + `SIM_Mission::Load` +
+`ApplyMissionSpecificData` sequence before `NextTurn()` and the
+`SIM_SaveGame::Save*` serializers can round-trip through `savegame.py`.
+
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
   state.  Events/attacks only move voter opinions, which the finance/GDP/PC
