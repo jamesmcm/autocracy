@@ -190,51 +190,101 @@ values exactly.
    fires on the turn after its latent crosses the trigger (turn 2), matching
    the game.
 
-### Known remaining gaps
+### Latest verification (correct-alignment t12, 6 commits later)
 
-A full game-state audit (nodes, situations, ministers, voters, policies,
-finance) across every saved game shows the policy levels, active flags,
-political capital and capital income all match, and the remaining gaps are
-concentrated in the voter population and the node values that feed off it:
+The `turn11_initial` save was captured after the turn-11 process, i.e. it is
+the **start of turn 12**, not turn 11 — so the `verify_all` harness
+misaligns that one comparison by one process.  Against the correct alignment
+the final state is:
 
-* **Node values** (26-30 diffs, mostly < 0.03): Immigration (sim 0.413 vs
-  game 0.385), Wages, Health, PrivateHealthcare, Unemployment,
-  WorkerProductivity, Education, etc.  The Immigration gap comes from the
-  never-introduced policies' constant terms (CitizenshipTests' -0.05 base on
-  Immigration is partially applied in the game) interacting with the node
-  values that feed it; adding the full constants over-corrects.  This drift
-  feeds the ~+5k (2%) final-turn income error via the CO2Emissions/CarUsage
-  multipliers and the ~-1.3k turn-8 error.
-* **Situation latents** (25-31 diffs): the situation values inherit the node
-  drift, though the active sets match at every captured turn.
-* **Voter polls** (18-19 diffs): the loaded polls drift by the effect changes
-  and the equality-driven collapses, but the remaining groups (Conservatives
-  -0.45 vs -0.82, MiddleIncome +0.03 vs -0.01) need the full poll opinion
-  dynamics (complacency/party/sympathy feedback) that the approximation
-  cannot reproduce.
-* **Voter percentages** (13-15 diffs): the income groups (Wealthy/Poor/
-  MiddleIncome) are now exact — each voter is placed in their income band
-  (inincome < 0.25 / 0.25-0.75 / > 0.75) with the band membership set to
-  `sin((income - boundary)/0.6·π)` (income = 1.2·inincome - 0.1), matching
-  the game's serialized percentages (0.252/0.252/0.496) and the voters'
-  reassigned income-group memberships 2000/2000.  The *other* groups'
-  percentages still drift in the game because the individual voters'
-  memberships change over the run (the party/sympathy membership changes),
-  which the static loaded memberships do not reproduce.
-* **Voter frequencies** (7-12 diffs): the `_freq` neurons drift with the
-  voter dynamics; the sim keeps the loaded values.
-* **Minister satisfaction values** (5-10 diffs): these are `0.5 + average` of
-  the two sympathised voter polls, so they inherit the poll drift; the
-  per-turn capital income still matches every turn because the loyalty
-  regions are robust to the small poll differences.
-* **Finance**: income/expenditure within ~2%, debt within ~0.03%, and the
-  income/cost multipliers are re-derived from the (slightly drifted) nodes.
+| field | diffs | note |
+|-------|-------|------|
+| nodes | 28    | mostly < 0.05 |
+| situations | 24 | active sets match (sitA=0) |
+| ministers | 11 | loyalty/value drift from polls |
+| polls | 19    | poll-model approximation |
+| percentages | 15 | party-model blocker |
+| frequencies | 12 | voter dynamics |
+| policies | 0 | exact |
+| income err | 1,245 | 0.5% |
+| exp err | 80 | |
+| PC err | 3 | capital income off 1 at t10-t11 |
 
-**Precision is not the cause** of the node gaps: testing the node computation
-in full double precision and in float32-rounding throughout changes nothing.
-The residuals come from the game's effect-value details and the voter
-population dynamics (membership/percentage/frequency changes), which are a
-large subsystem beyond the finance/loyalty parity targets.
+Reference saves: uk0->uk1 exact (nodes 26 diffs, income err 0), uk1->uk2
+income err 135 (was 606 before the CitizenshipTests fix).
+
+### Session commits (6, all pushed)
+
+1. `59d6264` Calibrate the TradeUnionist equality collapse slope 30->1.2
+   (the poll now lands at -0.495 vs the game's -0.501; minister value diffs
+   dropped 31->11).
+2. `3f0aae0` Decay cancelled policies' inertial rings instead of suppressing
+   them.  The game shifts one 0-sample per turn into a cancelled policy's
+   ring (confirmed by the StateHousing->PrivateHousing ring `[-0.4,...]` ->
+   `[0.0,-0.4,...]`), so the contribution decays rather than vanishing.
+   PrivateHousing now exact; t12 income err dropped ~5,327 -> ~1,800.
+3. `0ac22f6` Refresh the `_effectivedebt_` neuron from the live debt ratio
+   each turn (it was stuck at the serialized value, so DebtCrisis never
+   fired).  Now activates on the game's turns; situation active sets match
+   (sitA 1->0).
+4. `a33c818` Apply the CitizenshipTests constant to Immigration for the
+   never-introduced policy (the serialized Immigration carries the -0.05
+   base; the sim had suppressed it).  Only the Immigration link, not the
+   RacialTension one (that over-corrects).  Immigration 0.366->0.318,
+   RacialTension->0.541, RaceRiots->0.347; uk2 nodes 30->26, income 606->135.
+5. `6c641d3` Exclude situation effects from the income-group node incoming.
+   The DebtCrisis fix made the sim's DebtCrisis active, so its -0.4x effect
+   on `_MiddleIncome` landed in the graph sum *and* the fitted squeeze,
+   over-crashing the node to -1.0 (game -0.965) and inflating CarUsage/
+   CO2Emissions/CarbonTax income.  Skipping situation effects for the
+   `_` income nodes (they are voter-derived, handled by their own collapse
+   model) fixed it: t12 income err ~4,217 -> ~1,200.
+6. `bb1b2a1` Freeze the settled StateSchools->Education ring.  The
+   serialized ring is frozen at the pre-game level (0.184) in every save
+   while the policy sits at 0.36; the always-shift rule advanced it to the
+   current level.  Only this single link is frozen (a broad "settled rings
+   don't shift" rule regressed the income lines).  Education 0.576->0.531.
+
+### Remaining gaps (as of this update)
+
+* **Node values** (28 diffs, mostly < 0.05): the biggest are ViolentCrimeRate
+  (0.21, but the game's t12 VCR value 0.263 is a **save anomaly** — it is
+  inconsistent with the game's own input data, which implies ~0.42; the sim's
+  VCR matches at every aligned point), Education (0.048, the
+  PrivateSchools->Education ring), Health (0.034, the StateHealthService->
+  Health ring), OilSupply (0.030), WorkerProductivity (0.030).  The remaining
+  drifts are all the same ring-timing/source-model class: the game freezes or
+  times its inertial rings differently from the sim's always-shift rule, and
+  the broad fix regresses the income lines, so each needs a targeted case.
+* **Situation latents** (24 diffs): GeneralStrike (-0.083) is the
+  `Socialist_perc` party-model gap; RaceRiots/HospitalOvercrowding are driven
+  by the anomalous game t12 VCR; SkillsShortage/TeacherShortage follow the
+  Education node.
+* **Voter polls** (19 diffs): the loaded polls drift by the effect changes and
+  the equality-driven collapses, but the remaining groups need the full poll
+  opinion dynamics (complacency/party/sympathy feedback).
+* **Voter percentages** (15 diffs): the income groups (Wealthy/Poor/
+  MiddleIncome) are exact (band reassignment matches 2000/2000), but the
+  *other* groups' percentages drift in the game because the voters' party/
+  sympathy memberships change over the run, which the static loaded
+  memberships do not reproduce (the party definitions are not in the shipped
+  gamedata — a known blocker).
+* **Voter frequencies** (12 diffs): the `_freq` neurons drift with the voter
+  dynamics; the sim keeps the loaded values.
+* **Minister satisfaction** (11 diffs): `0.5 + average` of the two sympathised
+  polls, so it inherits the poll drift; the capital income trails the game by
+  1 at the last two turns (the FOREIGNPOLICY loyalty sits one bucket higher).
+* **Finance**: income/expenditure within 0.5-2%; the remaining income gap is
+  the income-history ring (the game's per-policy income neuron lags policy
+  changes, e.g. the TobaccoTax raise at t7 only appears in income at t9 and
+  then declines slowly, whereas the sim computes income directly from the
+  current level — the exact ring dynamics are not cleanly recoverable from
+  the saves).
+
+**Precision is not the cause** of the node gaps: full-double and float32-
+throughout node evaluation are byte-identical.  The residuals come from the
+game's effect-ring/source details and the voter population dynamics
+(membership/percentage/frequency changes).
 
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
@@ -243,7 +293,3 @@ large subsystem beyond the finance/loyalty parity targets.
   pursued, the game consumes its seed-1 random stream by collecting the
   events whose value crossed their threshold each turn and picking one with
   `GRandom::RandomChoice`.
-  (e.g. Immigration is 0.413 vs the game's 0.385 from the combination of
-  the never-introduced CitizenshipTests base term and the node values that
-  feed it); the reference saves still reproduce uk1 exactly and uk2 within
-  0.3%.
