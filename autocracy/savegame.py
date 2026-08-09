@@ -58,6 +58,8 @@ class SaveGame:
     # situation costs and debt interest; the per-policy
     # ``policy_incomes``/``policy_costs`` are the (one-turn-lagged) history
     # rings.
+    policy_cost_histories: Dict[str, List[float]] = field(default_factory=dict)
+    policy_income_histories: Dict[str, List[float]] = field(default_factory=dict)
     debt: float = 0.0
     interest_rate: float = 0.0
     credit_rating: int = 0
@@ -170,6 +172,8 @@ def parse_savegame(path: str | Path) -> SaveGame:
     policy_desired_throttles: Dict[str, float] = {}
     policy_costs: Dict[str, float] = {}
     policy_incomes: Dict[str, float] = {}
+    policy_cost_histories: Dict[str, List[float]] = {}
+    policy_income_histories: Dict[str, List[float]] = {}
     policy_implementations: Dict[str, float] = {}
     policy_active: Dict[str, bool] = {}
     policy_cost_multipliers: Dict[str, float] = {}
@@ -210,8 +214,14 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 )
                 cost_history = policy.findtext("costhistory")
                 income_history = policy.findtext("incomehistory")
-                policy_costs[normalized] = _first_history_value(cost_history)
-                policy_incomes[normalized] = _first_history_value(income_history)
+                cost_values = _history_values(cost_history)
+                income_values = _history_values(income_history)
+                policy_cost_histories[normalized] = cost_values
+                policy_income_histories[normalized] = income_values
+                policy_costs[normalized] = cost_values[0] if cost_values else 0.0
+                policy_incomes[normalized] = (
+                    income_values[0] if income_values else 0.0
+                )
             except ValueError:
                 continue
     effects_elem = root.find("effects")
@@ -455,6 +465,8 @@ def parse_savegame(path: str | Path) -> SaveGame:
         policy_desired_throttles=policy_desired_throttles,
         policy_costs=policy_costs,
         policy_incomes=policy_incomes,
+        policy_cost_histories=policy_cost_histories,
+        policy_income_histories=policy_income_histories,
         total_expenditure=total_expenditure,
         total_income=total_income,
         political_capital=political_capital,
@@ -531,6 +543,12 @@ def state_from_savegame(
     ]
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
+    state.policy_cost_histories = {
+        name: list(values) for name, values in save.policy_cost_histories.items()
+    }
+    state.policy_income_histories = {
+        name: list(values) for name, values in save.policy_income_histories.items()
+    }
     state.policy_cost_multipliers = save.policy_cost_multipliers.copy()
     state.policy_income_multipliers = save.policy_income_multipliers.copy()
     state.policy_cost_scalars = save.policy_cost_scalars.copy()
@@ -558,6 +576,10 @@ def state_from_savegame(
         for history in save.effect_histories
     ]
     simulator.recompute_effects(state, graph, effect_histories=state.effect_histories)
+    # Rebuild live per-policy lines from this save's current policy/runtime
+    # state.  The XML policy history is deliberately kept in the ring fields;
+    # the displayed totals below remain the serialized <finances> values.
+    simulator._recompute_orders_finance(state, data)
     # The per-policy rings loaded above are the one-turn-lagged finance
     # history.  The displayed totals come from the <finances> block, which
     # also includes wealth-scaled situation costs and debt interest.
@@ -597,8 +619,22 @@ def compare_state_to_savegame(
             continue
         if abs(sim_val - save_val) > tolerance:
             policy_diffs.append(DiffEntry(name=name, simulator=sim_val, savegame=save_val))
-    cost_diffs, missing_costs = _diff_budget_maps(state.policy_costs, save.policy_costs, tolerance)
-    income_diffs, missing_incomes = _diff_budget_maps(state.policy_incomes, save.policy_incomes, tolerance)
+    simulator_costs = {
+        name: values[0]
+        for name, values in state.policy_cost_histories.items()
+        if values
+    }
+    simulator_incomes = {
+        name: values[0]
+        for name, values in state.policy_income_histories.items()
+        if values
+    }
+    cost_diffs, missing_costs = _diff_budget_maps(
+        simulator_costs or state.policy_costs, save.policy_costs, tolerance
+    )
+    income_diffs, missing_incomes = _diff_budget_maps(
+        simulator_incomes or state.policy_incomes, save.policy_incomes, tolerance
+    )
     budget_diffs: List[DiffEntry] = []
     if abs(state.total_income - save.total_income) > tolerance:
         budget_diffs.append(

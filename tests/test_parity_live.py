@@ -77,8 +77,26 @@ def test_turn_zero_to_one_finance_matches_finances_block():
     ref = parse_savegame(SAVES_DIR / "turn1_initial.xml")
     assert state.total_income == pytest.approx(ref.total_income, abs=1.0)
     assert state.total_expenditure == pytest.approx(ref.total_expenditure, abs=1.0)
+    assert state.policy_income_histories["IncomeTax"][0] == pytest.approx(
+        ref.policy_income_histories["IncomeTax"][0], abs=0.01
+    )
+    assert state.policy_cost_histories["StatePensions"][0] == pytest.approx(
+        ref.policy_cost_histories["StatePensions"][0], abs=0.01
+    )
     assert state.political_capital == pytest.approx(ref.political_capital)
     assert "GeneralStrike" not in state.active_situations
+
+
+@pytest.mark.skipif(not (SAVES_DIR / "turn1_initial.xml").exists(), reason="saves missing")
+def test_active_floor_policy_keeps_minimum_live_income_separate_from_history():
+    state, _ = load_state_from_savegame(SAVES_DIR / "turn1_initial.xml")
+    ref = parse_savegame(SAVES_DIR / "turn1_initial.xml")
+    assert state.policy_active["IncomeTax"]
+    assert state.policies["IncomeTax"] == pytest.approx(0.0)
+    assert state.policy_incomes["IncomeTax"] > 0.0
+    assert state.policy_income_histories["IncomeTax"][0] == pytest.approx(
+        ref.policy_income_histories["IncomeTax"][0]
+    )
 
 
 @pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")

@@ -24,6 +24,10 @@ def test_parse_savegame_extracts_core_sections():
     assert "FoodStandards" in save.policies
     assert save.policy_costs["StateHealthService"] > 0
     assert save.policy_incomes["IncomeTax"] >= 0
+    assert len(save.policy_income_histories["IncomeTax"]) == 20
+    assert save.policy_income_histories["IncomeTax"][0] == pytest.approx(
+        save.policy_incomes["IncomeTax"]
+    )
     assert save.policy_desired_throttles["BusLanes"] == pytest.approx(
         save.policies["BusLanes"]
     )
@@ -81,7 +85,7 @@ def test_compare_state_to_savegame_reports_differences():
 def test_budget_differences_surface_in_comparison():
     save = parse_savegame(SAVE_PATH)
     state, _ = load_state_from_savegame(SAVE_PATH)
-    state.policy_costs["StatePensions"] += 1000
+    state.policy_cost_histories["StatePensions"][0] += 1000
     state.total_expenditure += 1000
     comparison = compare_state_to_savegame(state, save, tolerance=1e-6)
     assert comparison.cost_diffs

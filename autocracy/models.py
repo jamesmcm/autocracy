@@ -186,6 +186,12 @@ class SimulationState:
     response_factors: Dict[str, float] = field(default_factory=dict)
     policy_costs: Dict[str, float] = field(default_factory=dict)
     policy_incomes: Dict[str, float] = field(default_factory=dict)
+    # Democracy 3 serializes a 20-entry newest-first finance ring per policy.
+    # ``policy_costs``/``policy_incomes`` remain the live lines used while
+    # processing a turn; these rings preserve the values written by the
+    # game's Policy::NextTurn step for save/parity work.
+    policy_cost_histories: Dict[str, List[float]] = field(default_factory=dict)
+    policy_income_histories: Dict[str, List[float]] = field(default_factory=dict)
     total_expenditure: float = 0.0
     total_income: float = 0.0
     global_economy_position: float = 0.0

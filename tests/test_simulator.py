@@ -17,11 +17,20 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.country == state.country
     assert restored.policies == state.policies
     assert restored.policy_desired_throttles == state.policy_desired_throttles
+    assert restored.policy_income_histories == state.policy_income_histories
+    assert restored.policy_cost_histories == state.policy_cost_histories
     assert restored.political_capital_income == state.political_capital_income
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
     reloaded = simulator.load_state(out_path)
     assert reloaded.values == state.values
+
+
+def test_interest_rate_includes_global_interest_neuron():
+    data = simulator.load_simulation_data()
+    baseline = simulator._interest_rate(2, data, 0.5)
+    elevated = simulator._interest_rate(2, data, 0.75)
+    assert elevated > baseline
 
 
 def test_apply_actions_allows_small_adjustments_within_bounds():

@@ -32,6 +32,7 @@ DEFAULT_GAMEDATA = Path(__file__).resolve().parent.parent / "gamedata" / "data"
 ALLOWED_FUNCS = {"min": min, "max": max, "abs": abs}
 DEFAULT_PERCENTAGE_STEP = 0.05
 EPSILON = 1e-6
+POLICY_FINANCE_HISTORY_LENGTH = 20
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -47,6 +48,56 @@ def _f32(value: float) -> float:
     to float32 reproduces the shipped <finances> block exactly.
     """
     return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
+def _complete_policy_finance_histories(
+    histories: Dict[str, List[float]],
+    current_values: Dict[str, float],
+    data: SimulationData,
+) -> Dict[str, List[float]]:
+    """Return fixed-size newest-first policy finance rings.
+
+    Old JSON snapshots did not carry the rings.  Filling those from the live
+    line keeps them usable while preserving every value from a real save when
+    one was loaded.
+    """
+
+    completed: Dict[str, List[float]] = {}
+    for name in data.policies:
+        values = [float(value) for value in histories.get(name, [])]
+        fallback = float(current_values.get(name, 0.0))
+        if not values:
+            values = [fallback] * POLICY_FINANCE_HISTORY_LENGTH
+        elif len(values) < POLICY_FINANCE_HISTORY_LENGTH:
+            values.extend([values[-1]] * (POLICY_FINANCE_HISTORY_LENGTH - len(values)))
+        completed[name] = values[:POLICY_FINANCE_HISTORY_LENGTH]
+    return completed
+
+
+def _advance_policy_finance_histories(
+    state: SimulationState,
+    data: SimulationData,
+) -> tuple[Dict[str, List[float]], Dict[str, List[float]]]:
+    """Write the pre-policy-update finance lines into the game-style rings."""
+
+    cost_histories = _complete_policy_finance_histories(
+        state.policy_cost_histories, state.policy_costs, data
+    )
+    income_histories = _complete_policy_finance_histories(
+        state.policy_income_histories, state.policy_incomes, data
+    )
+    next_costs: Dict[str, List[float]] = {}
+    next_incomes: Dict[str, List[float]] = {}
+    for name in data.policies:
+        next_costs[name] = [
+            float(state.policy_costs.get(name, 0.0)),
+            *cost_histories[name][: POLICY_FINANCE_HISTORY_LENGTH - 1],
+        ]
+        next_incomes[name] = [
+            float(state.policy_incomes.get(name, 0.0)),
+            *income_histories[name][: POLICY_FINANCE_HISTORY_LENGTH - 1],
+        ]
+    return next_costs, next_incomes
 
 
 def _ensure_node(graph: nx.DiGraph, nodes: Dict[str, NodeDefinition], name: str) -> None:
@@ -245,8 +296,6 @@ def _policy_cost_amount(
     scalar: float = 1.0,
     wealth_mod: float = 1.0,
 ) -> float:
-    if level <= EPSILON:
-        return 0.0
     base = _budget_base_amount(policy.min_cost, policy.max_cost, level)
     if multiplier is None:
         multiplier = _evaluate_budget_modifiers(policy.cost_multipliers, level, context)
@@ -262,8 +311,6 @@ def _policy_income_amount(
     scalar: float = 1.0,
     wealth_mod: float = 1.0,
 ) -> float:
-    if level <= EPSILON:
-        return 0.0
     base = _budget_base_amount(policy.min_income, policy.max_income, level)
     if multiplier is None:
         multiplier = _evaluate_budget_modifiers(policy.income_multipliers, level, context)
@@ -356,6 +403,12 @@ def _seed_state_from_initial_save(
     ]
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
+    state.policy_cost_histories = {
+        name: list(values) for name, values in save.policy_cost_histories.items()
+    }
+    state.policy_income_histories = {
+        name: list(values) for name, values in save.policy_income_histories.items()
+    }
     state.policy_cost_multipliers = save.policy_cost_multipliers.copy()
     state.policy_income_multipliers = save.policy_income_multipliers.copy()
     state.policy_cost_scalars = save.policy_cost_scalars.copy()
@@ -559,6 +612,12 @@ def get_initial_state(
         # Situation outputs depend on the just-computed latent values.
         state.effects = _initialize_effect_memory(state, graph, data=data)
     _recalculate_budget(state, data)
+    state.policy_cost_histories = _complete_policy_finance_histories(
+        state.policy_cost_histories, state.policy_costs, data
+    )
+    state.policy_income_histories = _complete_policy_finance_histories(
+        state.policy_income_histories, state.policy_incomes, data
+    )
     if save:
         # The <finances> block totals (which include situation costs and debt
         # interest) are the ground truth for this snapshot; keep them so the
@@ -1339,18 +1398,29 @@ def _advance_state_values(
     #
     # The serialized rings show that the executable writes a fresh sample for
     # simvalue and situation sources every turn (situations only while
-    # active), while settled policy sources keep their ring untouched -- the
-    # SHS -> Health ring still holds samples from an earlier, lower policy
-    # level.  A policy ring only advances while the policy is moving toward
-    # its target or still rolling out.
+    # active).  A policy ring waits through the first process after a target
+    # change, then samples the post-update policy value while its old window
+    # drains; settled links continue shifting until their leading window has
+    # caught up.
     def should_shift(effect: Effect) -> bool:
         # The game writes a fresh sample into every applicable inertial ring
-        # every turn (the serialized rings confirm the IncomeTax lowering
-        # shifts 0-samples for several turns and the TobaccoTax raise shifts
-        # -0.8s); the ring's current value is the leading-window average.
+        # once the policy target boundary is crossed (the serialized rings
+        # confirm the IncomeTax lowering shifts 0-samples for several turns
+        # and the TobaccoTax raise shifts -0.8s); the ring's current value is
+        # the leading-window average.
         source = effect.source
         if source in data.situations:
             return source in active_situations
+        if source in state.policies:
+            # Policy::NextTurn waits until the requested slider target has
+            # caught up with the policy neuron before writing the first new
+            # sample.  This gives a one-turn delay after an order (IncomeTax
+            # and TobaccoTax show it in the captured rings), then samples the
+            # post-update policy value while the old ring drains.
+            previous = pre_policy_values.get(source, state.policies[source])
+            target = state.policy_desired_throttles.get(source, previous)
+            if abs(target - previous) > EPSILON:
+                return False
         # Data-driven frozen-ring exemptions (calibration.json): the
         # serialized StateSchools -> Education ring is frozen at the pre-game
         # level in every save while the policy sits settled, so leave those
@@ -1385,9 +1455,14 @@ def _advance_state_values(
                 continue
             new_effects[effect.effect_id] = 0.0
             continue
+        sample_policy_values = (
+            state.policies
+            if effect.source in state.policies and should_shift(effect)
+            else pre_policy_values
+        )
         raw_value = evaluate_expression(
             effect.expression,
-            effect_source(effect, pre_context, policy_values=pre_policy_values),
+            effect_source(effect, pre_context, policy_values=sample_policy_values),
             context=pre_context,
         )
         if effect.inertia:
@@ -1684,17 +1759,26 @@ def _capital_income(
     return float(int(total))
 
 
-def _interest_rate(credit_rating: int, data: SimulationData) -> float:
+def _interest_rate(
+    credit_rating: int,
+    data: SimulationData,
+    global_interest_rate: float = 0.5,
+) -> float:
     """Interest rate charged on the national debt.
 
     Mirrors ``SIM_FinanceManager::ApplyInterestRateCalculations``:
     ``rate = INTEREST_RATE_MIN + (INTEREST_RATE_MAX - INTEREST_RATE_MIN) *
-    min((credit_rating / 9) ** 2, 1.0)``.
+    (global_interest_rate - 0.5 + min((credit_rating / 9) ** 2, 1.0))``.
+    The game's global-interest neuron is centred at 0.5 in the shipped
+    saves, which is why the omitted term was invisible in the original
+    deterministic baseline.
     """
     min_rate = data.sim_config.get("INTEREST_RATE_MIN", 0.017)
     max_rate = data.sim_config.get("INTEREST_RATE_MAX", 0.15)
     factor = min((credit_rating / 9.0) ** 2, 1.0)
-    return min_rate + (max_rate - min_rate) * factor
+    return min_rate + (max_rate - min_rate) * (
+        factor + global_interest_rate - 0.5
+    )
 
 
 def _credit_rating_from_debt_ratio(ratio: float) -> int:
@@ -1905,7 +1989,11 @@ def _recompute_orders_finance(
     *stored* multiplier/scalar neurons (they only update at the end of the
     turn), but with the new active-policy set and the current interest rate.
     """
-    rate = state.interest_rate or _interest_rate(state.credit_rating, data)
+    rate = state.interest_rate or _interest_rate(
+        state.credit_rating,
+        data,
+        state.values.get("_global_interest_rates_", 0.5),
+    )
     return _finance_totals(
         state,
         data,
@@ -1972,7 +2060,11 @@ def _recompute_live_finance(
             if policy.max_cost > 0
             else 1.0
         )
-    rate = state.interest_rate or _interest_rate(state.credit_rating, data)
+    rate = state.interest_rate or _interest_rate(
+        state.credit_rating,
+        data,
+        state.values.get("_global_interest_rates_", 0.5),
+    )
     return _finance_totals(
         state,
         data,
@@ -2019,6 +2111,9 @@ def process_end_of_turn(
 ) -> SimulationState:
     data = data or load_simulation_data()
     source_policies = state.policies.copy()
+    policy_cost_histories, policy_income_histories = _advance_policy_finance_histories(
+        state, data
+    )
     runtime_state = _advance_policy_runtime(state, data)
     (
         new_values,
@@ -2088,6 +2183,8 @@ def process_end_of_turn(
         situations=situation_values,
         active_situations=active_situations,
         response_factors=runtime_state.response_factors.copy(),
+        policy_cost_histories=policy_cost_histories,
+        policy_income_histories=policy_income_histories,
         global_economy_position=global_position,
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
@@ -2115,7 +2212,11 @@ def process_end_of_turn(
         debt=debt,
         credit_rating=credit_rating,
         turns_since_credit=turns_since_credit,
-        interest_rate=_interest_rate(credit_rating, data),
+        interest_rate=_interest_rate(
+            credit_rating,
+            data,
+            runtime_state.values.get("_global_interest_rates_", 0.5),
+        ),
         event_log=list(state.event_log),
         fired_plots=list(state.fired_plots),
         group_threats=dict(state.group_threats),
@@ -2250,6 +2351,14 @@ def apply_actions(
         situations=state.situations.copy(),
         active_situations=state.active_situations.copy(),
         response_factors=state.response_factors.copy(),
+        policy_cost_histories={
+            name: list(values)
+            for name, values in state.policy_cost_histories.items()
+        },
+        policy_income_histories={
+            name: list(values)
+            for name, values in state.policy_income_histories.items()
+        },
         global_economy_position=state.global_economy_position,
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
@@ -2384,6 +2493,8 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "response_factors": state.response_factors,
         "policy_costs": state.policy_costs,
         "policy_incomes": state.policy_incomes,
+        "policy_cost_histories": state.policy_cost_histories,
+        "policy_income_histories": state.policy_income_histories,
         "total_expenditure": state.total_expenditure,
         "total_income": state.total_income,
         "global_economy_position": state.global_economy_position,
@@ -2446,6 +2557,14 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         response_factors={k: float(v) for k, v in dict(payload.get("response_factors", {})).items()},
         policy_costs={k: float(v) for k, v in dict(payload.get("policy_costs", {})).items()},
         policy_incomes={k: float(v) for k, v in dict(payload.get("policy_incomes", {})).items()},
+        policy_cost_histories={
+            k: [float(value) for value in values]
+            for k, values in dict(payload.get("policy_cost_histories", {})).items()
+        },
+        policy_income_histories={
+            k: [float(value) for value in values]
+            for k, values in dict(payload.get("policy_income_histories", {})).items()
+        },
         total_expenditure=float(payload.get("total_expenditure", 0.0)),
         total_income=float(payload.get("total_income", 0.0)),
         global_economy_position=float(payload.get("global_economy_position", 0.0)),
@@ -2534,6 +2653,12 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
     )
     data = load_simulation_data()
     _recalculate_budget(state, data)
+    state.policy_cost_histories = _complete_policy_finance_histories(
+        state.policy_cost_histories, state.policy_costs, data
+    )
+    state.policy_income_histories = _complete_policy_finance_histories(
+        state.policy_income_histories, state.policy_incomes, data
+    )
     return state
 
 
