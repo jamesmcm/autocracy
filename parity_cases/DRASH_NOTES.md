@@ -554,3 +554,21 @@ approximately `0.002` at the final capture. A regression test locks the
 previous-frequency criterion on the Commuter list. This is a deterministic
 membership fix; the non-serialized party lists, activist/poll modifiers, and
 per-voter income host links remain open manager state.
+
+### Native situation outputs reach voter types (current)
+
+Situation-manager output effects are part of the live effect vector even
+though situations are managed outside the ordinary simulation graph. The
+simulator previously applied those outputs to ordinary nodes but omitted them
+when it advanced the saved VoterType values. Static `SIM_VoterType`/neuron
+ordering and the captured transition support using the already-computed effect
+values: the current pass uses `new_effects`, while the previous pass uses the
+saved `state.effects`, preserving any serialized inertia window.
+
+The turn-1 to turn-2 capture is a direct regression case. `GeneralStrike` is
+active for the turn-2 pass and its `-0.2-(0.3*x)` output lowers Conservatives;
+the resulting value is now within `0.05` of the game's `-0.82454151` capture.
+The remaining late party-count drift is not evidence against this link: native
+`CalculateApproval` also applies perception, fundraising, and election
+modifiers before the party manager rebuilds its live lists, none of which are
+serialized in these saves.

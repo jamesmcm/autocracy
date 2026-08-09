@@ -1258,8 +1258,15 @@ def _effects_on_voter_types(
     data: SimulationData,
     policies: Dict[str, float],
     node_values: Dict[str, float],
+    situation_effects: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
-    """Sum the current effect of every policy and economy node on each voter type."""
+    """Sum current policy, node, and situation effects on voter types.
+
+    Situation outputs are managed outside the ordinary graph, but their live
+    values are part of the same native effect vector.  Callers pass the
+    already-computed effect values so inertial situation links retain their
+    serialized ring state instead of being evaluated from the latent again.
+    """
     totals: Dict[str, float] = {}
     context = {**node_values, **policies}
     for name, policy in data.policies.items():
@@ -1284,6 +1291,19 @@ def _effects_on_voter_types(
             ):
                 totals[target] = totals.get(target, 0.0) + evaluate_expression(
                     effect.expression, source_value, context=context
+                )
+    if situation_effects is not None:
+        for definition in data.situations.values():
+            for effect in definition.effects:
+                if effect.target not in data.nodes:
+                    continue
+                if data.nodes[effect.target].category != "VOTER":
+                    continue
+                effect_id = effect.effect_id
+                if effect_id is None:
+                    continue
+                totals[effect.target] = totals.get(effect.target, 0.0) + (
+                    situation_effects.get(effect_id, 0.0)
                 )
     return totals
 
@@ -1433,6 +1453,7 @@ def _advance_voters_and_income_nodes(
     new_values: Dict[str, float],
     source_policies: Optional[Dict[str, float]] = None,
     previous_voter_frequencies: Optional[Dict[str, float]] = None,
+    situation_effects: Optional[Dict[str, float]] = None,
 ) -> None:
     """Advance the voter population and re-derive the income ``_`` nodes.
 
@@ -1452,8 +1473,12 @@ def _advance_voters_and_income_nodes(
     context = {**new_values, **state.policies, **state.situations}
     source = source_policies if source_policies is not None else state.policies
     previous_context = {**state.values, **source, **state.situations}
-    current = _effects_on_voter_types(data, state.policies, new_values)
-    previous = _effects_on_voter_types(data, source, state.values)
+    current = _effects_on_voter_types(
+        data, state.policies, new_values, situation_effects=situation_effects
+    )
+    previous = _effects_on_voter_types(
+        data, source, state.values, situation_effects=state.effects
+    )
 
     # The voter-type poll values drift with the change in their incoming
     # effects (a tax cut raises the affected groups' polls).  The ministers'
@@ -1935,6 +1960,7 @@ def _advance_state_values(
         new_values,
         source_policies=source_policies,
         previous_voter_frequencies=previous_voter_frequencies,
+        situation_effects=new_effects,
     )
 
     # Situation values are serialized after their input links have advanced.

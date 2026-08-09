@@ -178,6 +178,11 @@ bootstrap a simulation from an in-game snapshot.
   parity gap; the
   underlying per-voter fields and VoterType frequency/grudge state are retained
   when loading or snapshotting state.
+- Active situation output links targeting voter types now join the same
+  current-versus-previous effect delta as policy and ordinary-node links. This
+  closes the captured GeneralStrike-to-Conservatives omission; native party
+  lists, approval modifiers, and activist/poll manager state still limit later
+  membership parity.
   Stochastic systems stay opt-in and off by default.
 
 ### Next parity work

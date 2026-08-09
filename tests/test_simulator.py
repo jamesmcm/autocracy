@@ -178,6 +178,22 @@ def test_noop_replay_reconstructs_income_group_memberships():
         )
 
 
+def test_active_situation_outputs_reach_voter_values():
+    """GeneralStrike's active output is part of the native voter effect vector."""
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn1_initial.xml", data
+    )
+    reference = parse_savegame("parity_cases/dem3saves/turn2_initial.xml")
+
+    advanced = simulator.process_end_of_turn(state, graph, data=data)
+
+    assert "GeneralStrike" in advanced.active_situations
+    assert advanced.voter_values["Conservatives"] == pytest.approx(
+        reference.voter_values["Conservatives"], abs=0.05
+    )
+
+
 def test_voter_percentages_use_previous_frequency_snapshot():
     """Ordinary group links use the saved VoterType base for this pass."""
     data = simulator.load_simulation_data()
