@@ -213,7 +213,7 @@ the final state is:
 Reference saves: uk0->uk1 exact (nodes 26 diffs, income err 0), uk1->uk2
 income err 135 (was 606 before the CitizenshipTests fix).
 
-### Session commits (6, all pushed)
+### Earlier session commits (historical milestones)
 
 1. `59d6264` Calibrate the TradeUnionist equality collapse slope 30->1.2
    (the poll now lands at -0.495 vs the game's -0.501; minister value diffs
@@ -245,6 +245,11 @@ income err 135 (was 606 before the CitizenshipTests fix).
    current level.  Only this single link is frozen (a broad "settled rings
    don't shift" rule regressed the income lines).  Education 0.576->0.531.
 
+### Recent branch commits
+
+7. `6407bc3` Preserve policy finance history parity.
+8. `6b729f4` Align parity replay and document static driving.
+
 ### Remaining gaps (as of this update)
 
 * **Node values** (28 diffs, mostly < 0.05): the biggest are ViolentCrimeRate
@@ -275,12 +280,13 @@ income err 135 (was 606 before the CitizenshipTests fix).
 * **Minister satisfaction** (11 diffs): `0.5 + average` of the two sympathised
   polls, so it inherits the poll drift; the capital income trails the game by
   1 at the last two turns (the FOREIGNPOLICY loyalty sits one bucket higher).
-* **Finance**: income/expenditure within 0.5-2%; the remaining income gap is
-  the income-history ring (the game's per-policy income neuron lags policy
-  changes, e.g. the TobaccoTax raise at t7 only appears in income at t9 and
-  then declines slowly, whereas the sim computes income directly from the
-  current level — the exact ring dynamics are not cleanly recoverable from
-  the saves).
+* **Finance**: income/expenditure within 0.5-2%.  The save bridge now retains
+  the game's 20-entry policy finance rings, but the remaining income gap is
+  coupled to the same hidden effect-throttle state as the targeted node
+  residuals: the game's per-policy income neuron lags policy changes, e.g. the
+  TobaccoTax raise at t7 only appears in income at t9 and then declines slowly.
+  The serialized saves do not expose enough runtime throttle state to recover
+  every such ring exactly.
 
 ### Follow-up audit (current)
 
@@ -305,6 +311,29 @@ model gaps listed below.
 throughout node evaluation are byte-identical.  The residuals come from the
 game's effect-ring/source details and the voter population dynamics
 (membership/percentage/frequency changes).
+
+### Static effect-load audit (current)
+
+The executable explains the remaining ring ambiguity. `SIM_NeuralEffect` keeps
+separate current and desired output throttles, advances the current throttle
+toward the desired value using the effect delay, averages the leading inertial
+history slots, and then writes a new raw expression sample. For a policy parent,
+the live effect also applies ministerial effectiveness and the policy's current
+slider value.
+
+`SIM_LoadGame::LoadEffects` restores the input-effect throttles and the raw
+33-slot `effecthistory` arrays. It does not serialize the desired output
+throttle for every arbitrary outgoing effect; `SIM_Simulation::PostLoad` then
+recalculates live effects from the state it has. This is why the captured
+`StateHealthService -> Health` and `PrivateSchools -> Education` rings do not
+always equal the direct expression evaluated from the saved policy/simvalue.
+
+A broad proxy that sampled every moving policy before its update was tested and
+rejected: it improved some captured ring heads but moved the aligned final
+expenditure error from about `-32.5` to about `+80`. The targeted
+policy-boundary rule is therefore retained until effect-level throttle state
+can be recovered or a native game capture is available. No unsafe global ring
+rule was added.
 
 ### Calibration is data-driven (commit 33222ed)
 
@@ -345,6 +374,14 @@ every simulation entry point is available as a symbol:
 * `SIM_Mission::Load(std::string)` — loads a country; the game accepts a
   `-silent` command-line flag and runs under Xvfb
 
+The static follow-up pinned `SIM_LoadGame`'s filename `std::string` at `+0x838`
+and the `ProcessGameLoad` sequence: open the file, release gameplay, preload,
+load all game data, postload, then free the temporary load buffer. The load
+order reaches `LoadEffects` after simulation/gameplay data; that routine
+restores input throttles and raw effect histories but not every outgoing
+desired throttle. This is the missing runtime state behind the targeted ring
+gaps.
+
 Two harnesses would give exact parity by construction (it *is* the game):
 gdb-driving (break on `SIM_Simulation::NextTurn`, call load->set-policy->
 NextTurn->save from a command file) or an LD_PRELOAD `.so` exposing a
@@ -367,11 +404,12 @@ under Xvfb + gdb and prove the driving is reachable:
 
 **Blockers to a full round-trip** (documented in `gamedrive/README.md`): the
 `SIM_GetLoadGame()`/`SIM_GetSaveGame()` getters are static inline (no symbol)
-and their singletons are lazily constructed; gdb has no C++ type info (the
-debug_info is function-level), so the class layouts must be reverse-engineered;
+and their singletons are lazily constructed; gdb has no usable C++ object
+layout/type information beyond the member accesses visible in disassembly;
 and direct calls into `OpenSavedFile`/`LoadGameData` from the breakpoint hang.
-Completing it needs the class member offsets (from the vtables/constructors)
-plus a `SIM_Simulation::Initialise` + `SIM_Mission::Load` +
+The filename offset and load call order are now pinned, but completing the
+round-trip still needs the remaining class/runtime layout plus a
+`SIM_Simulation::Initialise` + `SIM_Mission::Load` +
 `ApplyMissionSpecificData` sequence before `NextTurn()` and the
 `SIM_SaveGame::Save*` serializers can round-trip through `savegame.py`.
 

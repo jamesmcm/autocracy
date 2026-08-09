@@ -53,6 +53,14 @@ neuron is `SIM_Simulation`'s value at the finance-manager call site. These
 offsets are tied to Democracy 3 v1.30.2 and must be revalidated before any
 `LD_PRELOAD` or gdb command invokes a constructor or member function.
 
+The load-flow audit also pinned the `SIM_LoadGame` filename `std::string` at
+`+0x838`. `ProcessGameLoad()` opens that file, calls gameplay release/preload,
+loads the ordered game-data sections, calls gameplay postload, and frees the
+temporary load buffer. `LoadEffects()` restores input-effect throttles and raw
+33-slot histories, but does not serialize the desired output throttle for every
+outgoing effect; this is the runtime state behind the remaining targeted ring
+residuals.
+
 ## What the prototype does
 
 `gdb_drive.py` starts an Xvfb display, launches the game under gdb with
@@ -82,9 +90,9 @@ driven by the GUI (`SIM_LoadGame::LoadGame` -> `ProcessGameLoad` ->
 * the `SIM_GetLoadGame()`/`SIM_GetSaveGame()` getters are **static inline**
   (no symbol), and their singletons are lazily constructed (vtable is zero at
   `mainLoop`), so the instances must be constructed manually;
-* gdb has **no C++ type info** (the debug_info is function-level only), so the
-  class member layouts (e.g. where `SIM_LoadGame` stores the filename) must be
-  reverse-engineered from the disassembly;
+* gdb has **no usable C++ object layout/type info** beyond the member accesses
+  visible in disassembly. The filename offset is pinned, but the remaining
+  load/runtime objects still need to be reconstructed;
 * the `LoadGame` flow starts threads and a loading screen, and direct calls
   into `OpenSavedFile`/`LoadGameData` from the breakpoint hang (no progress);
 * `SIM_Simulation::NextTurn()` without a loaded country SIGFPEs.

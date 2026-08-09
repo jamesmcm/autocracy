@@ -60,6 +60,11 @@ political capital, total income, total expenditure, and net balance. The
 - Serialized inertial links are restored as raw 33-slot effect rings. The live
   effect is the leading-window average; policy links apply ministerial
   effectiveness to the live value, not to saved raw samples.
+- The general effect-ring replay is necessarily a proxy for arbitrary loaded
+  saves: the executable restores raw histories and input throttles, but does
+  not serialize every outgoing effect's desired throttle. Targeted
+  policy/simvalue ring residuals therefore remain until that runtime state can
+  be recovered.
 - State snapshots include situations, active situations, hidden global
   neurons, voter histories, policy runtime/multiplier fields, delayed policy
   throttles, ministerial effectiveness, political-capital points, policy
@@ -146,6 +151,10 @@ bootstrap a simulation from an in-game snapshot.
   neuron; save parsing also preserves each policy's 20-entry cost/income
   history ring. The drastic replay's aligned final residual is about -1,225
   income / -33 expenditure.
+- The remaining continuous-state residuals are concentrated in outgoing
+  effect-ring throttle/load state; a broad pre-update sampling rule regresses
+  final expenditure, so the simulator keeps the targeted rule documented in
+  `SIMULATION.md`.
 - Party/sympathy poll dynamics, percentages, and frequencies remain the main
   manager-owned parity gap; stochastic systems stay opt-in and off by default.
 
