@@ -139,6 +139,45 @@ def test_party_membership_uses_native_approval_and_sympathy_guards():
     assert state.parties["Player"].member_history == [0, 2]
 
 
+def test_income_groups_use_native_sine_windows_and_threshold():
+    data = simulator.load_simulation_data()
+
+    wealthy = Voter(inincome=0.88792241)
+    middle = Voter(inincome=0.5)
+    poor = Voter(inincome=0.1)
+
+    wealthy_groups = simulator._native_income_group_memberships(wealthy, 0.5)
+    middle_groups = simulator._native_income_group_memberships(middle, 0.5)
+    poor_groups = simulator._native_income_group_memberships(poor, 0.5)
+
+    assert wealthy_groups[11] == pytest.approx(0.91634818, abs=1e-6)
+    assert wealthy_groups[12] == pytest.approx(0.0)
+    assert middle_groups[13] == pytest.approx(1.0)
+    assert poor_groups[12] == pytest.approx(0.9330127, abs=1e-6)
+    assert data.sim_config["VOTER_GROUP_MEMBERSHIP_THRESHHOLD"] == pytest.approx(0.5)
+
+
+def test_noop_replay_reconstructs_income_group_memberships():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    reference = parse_savegame("parity_cases/dem3saves/turn1_initial.xml")
+
+    advanced = simulator.process_end_of_turn(state, graph, data=data)
+
+    assert advanced.voters[0].groups[11] == pytest.approx(
+        reference.voters[0].groups[11], abs=1e-6
+    )
+    for symbol, name in ((11, "Wealthy_perc"), (12, "Poor_perc"), (13, "MiddleIncome_perc")):
+        expected = sum(
+            1 for voter in reference.voters if voter.groups.get(symbol, 0.0) > 0.0
+        ) / len(reference.voters)
+        assert advanced.voter_percentages[name] == pytest.approx(
+            expected
+        )
+
+
 def test_delayed_policy_ring_samples_after_one_ramp_turn():
     data = simulator.load_simulation_data()
     state, graph = load_state_from_savegame(

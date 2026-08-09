@@ -357,13 +357,20 @@ identify a recoverable contiguous seed-1 stream. The simulator therefore keeps
 the deterministic sine term and records the native limitation instead of
 hard-coding a guessed multiplier sequence.
 
-The same audit pinned `SIM_Voter::UpdateIncome()` (0x61e620) and
+The same audit pinned `SIM_Voter::UpdateIncome()` (0x61e620),
+`SIM_Voter::AddToIncomeGroup(SIM_VoterType*, float)` (0x61e4d0), and
 `SIM_VoterType::ForceVoter(SIM_Voter*, float)` (0x623350). Native income-group
-membership is rebuilt from runtime per-voter income fields and uses sinusoidal
-windows; the current model uses serialized `inincome` band assignment and does
-not yet apply every dynamic `*_income` effect. The native entries are now part
-of the 33-symbol static preflight, which also verifies the load/singleton,
-slider, and RNG hooks; it remains safe and does not launch the installed game.
+membership evaluates the overlapping `[-.3,.3]`, `[.2,.8]`, and `[.7,1.3]`
+sinusoidal windows against the runtime income, selects the strongest candidate,
+and applies the `VOTER_GROUP_MEMBERSHIP_THRESHHOLD=0.5` floor. The simulator
+now mirrors that assignment and counts the selected linked-list group for the
+income percentages. Across the captured UK saves the formula is within
+`6e-7` of every serialized income-group weight after the first load transition;
+the first voter’s `.916348` wealthy weight is an exact static check. Dynamic
+`*_income` links still depend on a non-serialized income-neuron contribution,
+so they remain an open continuation item. These native entries are now part of
+the 33-symbol static preflight, which also verifies the load/singleton, slider,
+and RNG hooks; it remains safe and does not launch the installed game.
 
 ### Calibration is data-driven (commit 33222ed)
 

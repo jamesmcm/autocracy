@@ -1113,6 +1113,55 @@ VOTER_SYMBOL_NAMES = {
 INCOME_GROUP_NODES = {11: "_HighIncome", 12: "_LowIncome", 13: "_MiddleIncome"}
 
 
+def _native_income_group_memberships(
+    voter: Voter,
+    membership_threshold: float,
+) -> Dict[int, float]:
+    """Return the native income-group weights for one voter.
+
+    ``SIM_Voter::UpdateIncome`` evaluates three overlapping sinusoidal
+    windows against the current income value and keeps only the strongest
+    candidate.  ``AddToIncomeGroup`` then applies the voter manager's
+    membership threshold as a floor.  The saved UK data uses the native
+    ``VOTER_GROUP_MEMBERSHIP_THRESHHOLD=0.5``; for example, the first
+    captured voter produces the serialized ``0.916348`` wealthy weight.
+
+    The income-neuron contribution is not serialized by the game.  The
+    model's ``income`` field is retained as that transient contribution when
+    a caller supplies one, and is zero for the captured save corpus.
+    """
+
+    current_income = _clamp(voter.inincome + voter.income, 0.0, 1.0)
+    candidates = {
+        12: (-0.3, 0.3),
+        13: (0.2, 0.8),
+        11: (0.7, 1.3),
+    }
+    weights = {
+        symbol: _clamp(
+            math.sin(
+                (current_income - lower) / (upper - lower) * math.pi
+            ),
+            0.0,
+            1.0,
+        )
+        if lower <= current_income <= upper
+        else 0.0
+        for symbol, (lower, upper) in candidates.items()
+    }
+    primary = max(weights, key=weights.get)
+    membership = _clamp(
+        membership_threshold
+        + (1.0 - membership_threshold) * weights[primary],
+        0.0,
+        1.0,
+    )
+    return {
+        symbol: membership if symbol == primary else 0.0
+        for symbol in INCOME_GROUP_NODES
+    }
+
+
 def _effects_on_voter_types(
     data: SimulationData,
     policies: Dict[str, float],
@@ -1344,24 +1393,16 @@ def _advance_voters_and_income_nodes(
 
     income_sums: Dict[int, float] = {}
     income_weights: Dict[int, float] = {}
+    membership_threshold = data.sim_config.get(
+        "VOTER_GROUP_MEMBERSHIP_THRESHHOLD", 0.5
+    )
     for voter in state.voters:
-        # SIM_Voter::UpdateIncome reassigns each voter's income-group
-        # memberships (Wealthy=11 / Poor=12 / MiddleIncome=13) from their
-        # income level: income = f(inincome) and the membership of the
-        # voter's income band is sin((income - boundary)/0.6 * pi).  Each
-        # voter sits in one band, so the other two memberships are zero.
-        income = 1.2 * voter.inincome - 0.1
-        if voter.inincome < 0.25:
-            primary, boundary = 12, -0.3
-        elif voter.inincome <= 0.75:
-            primary, boundary = 13, 0.2
-        else:
-            primary, boundary = 11, 0.7
-        membership = _clamp(
-            math.sin((income - boundary) / 0.6 * math.pi), 0.0, 1.0
+        # The native UpdateIncome path uses overlapping [−.3,.3], [.2,.8]
+        # and [.7,1.3] windows, selects the largest candidate, and applies
+        # the manager threshold to the winning membership.
+        voter.groups.update(
+            _native_income_group_memberships(voter, membership_threshold)
         )
-        for symbol in (11, 12, 13):
-            voter.groups[symbol] = membership if symbol == primary else 0.0
         delta = 0.0
         for symbol, member in voter.groups.items():
             if member <= 0.0:
@@ -1379,6 +1420,10 @@ def _advance_voters_and_income_nodes(
         crash_threshold = float(crash_cfg.get("threshold", 0.15))
         crash = min(0.0, crash_slope * (new_values.get("GDP", 0.0) - crash_threshold))
         voter.value = _clamp(voter.value + delta + crash, -1.0, 1.0)
+        # Keep the existing voter-contribution calibration isolated from the
+        # native membership correction.  The captured game values already
+        # match the graph sum plus the calibrated squeeze; enabling this
+        # approximation with native weights creates a larger late-turn error.
         if symbol in INCOME_GROUP_NODES:
             income_sums[symbol] = income_sums.get(symbol, 0.0) + member * voter.value
             income_weights[symbol] = income_weights.get(symbol, 0.0) + member
@@ -1414,24 +1459,20 @@ def _advance_voters_and_income_nodes(
         graph_sum = new_values.get(node_name, 0.0)
         new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
 
-    # The voter-type percentages are the population share whose membership
-    # in the group exceeds the membership threshold (the game's
-    # CalculatePercentage).  The income groups (Wealthy=11 / Poor=12 /
-    # MiddleIncome=13) are assigned from the income bands once the run
-    # starts, so their counts come from the income bands rather than the
-    # static loaded memberships.
+    # The voter-type percentages are the population share in each native
+    # linked-list group (the game's CalculatePercentage).  Ordinary groups
+    # use the configured membership threshold; income groups are explicitly
+    # assigned by UpdateIncome and therefore count every selected member,
+    # including a membership weight below 0.5.
     n_voters = len(state.voters)
     if n_voters:
         for symbol, name in VOTER_SYMBOL_NAMES.items():
             if symbol in INCOME_GROUP_NODES:
-                if symbol == 11:
-                    count = sum(1 for v in state.voters if v.inincome > 0.75)
-                elif symbol == 12:
-                    count = sum(1 for v in state.voters if v.inincome < 0.25)
-                else:
-                    count = sum(
-                        1 for v in state.voters if 0.25 <= v.inincome <= 0.75
-                    )
+                count = sum(
+                    1
+                    for voter in state.voters
+                    if voter.groups.get(symbol, 0.0) > 0.0
+                )
             else:
                 count = sum(
                     1 for voter in state.voters if voter.groups.get(symbol, 0.0) > 0.5

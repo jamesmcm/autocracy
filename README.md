@@ -71,6 +71,9 @@ political capital, total income, total expenditure, and net balance. The
   party/sympathy inputs, policy runtime/multiplier fields, delayed policy
   throttles, ministerial effectiveness, political-capital points, policy
   finance history rings, and effect histories.
+- Voter income groups follow the native overlapping sinusoidal curves and
+  `VOTER_GROUP_MEMBERSHIP_THRESHHOLD` floor; the non-serialized income-neuron
+  contribution remains zero unless a caller supplies transient runtime state.
 - When available, `get_initial_state` seeds node and policy values from
   `gamedata/saves/<country>0.xml`, matching the shipped baseline.
 - Policy runtime keeps the current neuron value (`<val>`) separate from the

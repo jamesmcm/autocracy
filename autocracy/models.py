@@ -162,6 +162,10 @@ class Voter:
     value (the save's ``<value>``).  The voter types the game polls aggregate
     these members; the ``_LowIncome``/``_MiddleIncome``/``_HighIncome``
     "effective income" nodes are derived from the income-group members.
+
+    ``income`` is the transient contribution from the voter's income neuron;
+    the game does not serialize it, so captured saves normally load it as
+    zero while the simulator keeps the field available for runtime state.
     """
 
     groups: Dict[int, float] = field(default_factory=dict)
