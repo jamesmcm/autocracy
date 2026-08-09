@@ -1333,6 +1333,11 @@ def _advance_state_values(
         source = effect.source
         if source in data.situations:
             return source in active_situations
+        # The serialized StateSchools -> Education ring is frozen at the
+        # pre-game level (0.184) across every save while the policy sits
+        # settled at 0.36; only this link is frozen, so leave it untouched.
+        if (effect.source, effect.target) == ("StateSchools", "Education"):
+            return False
         return True
 
     pre_policy_values = source_policies or state.policies
