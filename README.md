@@ -202,8 +202,12 @@ bootstrap a simulation from an in-game snapshot.
   activist/poll updates) plus the non-serialized per-voter income-neuron host
   links from static binary analysis and captured saves.
 - Run `gamedrive/preflight.py` to verify the 59 version-specific native symbols
-  before continuing gdb/LD_PRELOAD work.
-- Use the binary manager call order and save snapshots to continue the native
-  gdb/LD_PRELOAD path; do not launch the installed game on this server.
+  before using the version-pinned injector.
+- Use `gamedrive/inject_drive.py --sync-gameplay-turn` under Xvfb to load a
+  copied save, run the native `NextTurnThread`, and save direct ground truth.
+  See [`gamedrive/README.md`](gamedrive/README.md) for the memory-editing
+  boundary and measured all-node comparison.
+- Keep raw native output saves outside the repository and use fresh save names;
+  the installed binary is version-pinned to Democracy 3 v1.30.2.
 - Keep raw proprietary saves outside the repository; commit only reviewable
   extraction fixtures and reproducible tests.

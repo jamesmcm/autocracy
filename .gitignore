@@ -7,4 +7,5 @@ gamedata/saves
 !parity_cases/dem3saves/*.xml
 *.lock
 *.pyc
+gamedrive/libd3probe.so
 !autocracy/calibration.json

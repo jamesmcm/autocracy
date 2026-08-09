@@ -165,6 +165,31 @@ approval modifiers, effect throttles, and the global-economy random cursor.
 
 The simulator returns a new state object, but its core update is intentionally ordered rather than fully synchronous: direct effects can cascade to later nodes in the same pass, as they do in the game. The 33-pass `PreCalcCoreSimulation` settling routine used by the executable during initialization is distinct from the normal one-pass turn path.
 
+### Native ground-truth bridge
+
+`gamedrive/` now contains a version-pinned, headless gdb/`LD_PRELOAD` probe for
+the installed Democracy 3 v1.30.2 binary. It uses the game's asynchronous
+`SIM_LoadGame::LoadGame` path, waits for the native loading-complete flag, and
+serializes through `SIM_SaveGame`. The reliable turn mode invokes the game's
+`NextTurnThread(void*)` worker synchronously; this preserves the native manager
+order while avoiding the GUI thread orchestration that can stall under ptrace.
+
+Run `make -C gamedrive` and `uv run python gamedrive/preflight.py` before using
+the probe. `inject_drive.py --sync-gameplay-turn` writes native output saves to
+the installed user's save directory, while `--skip-turn --edit-node NAME
+--edit-value VALUE` performs an explicit, process-local write to the live
+neuron value slot and saves a separate edited copy. Always copy source captures
+to fresh names and keep the raw outputs outside the repository.
+
+The direct boundary gives a same-input oracle: loading `turn0_initial.xml`
+reproduced the parser's extracted load snapshot exactly. A no-order native
+turn matched simulator finance, policies, and effect throttles exactly; across
+all observed sections the ordinary-node residual was 14/40 nodes (maximum
+0.021644), while voter percentages remained the largest gap (maximum 0.496).
+The captured `turn1_initial.xml` includes `turn0_orders.xml`, so it is not a
+valid comparison for that no-order native run. Driving native slider/order
+entrypoints remains the next step for the complete action replay.
+
 ---
 
 ### Actions API

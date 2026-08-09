@@ -1,7 +1,8 @@
 # Driving the real Democracy 3 simulation externally via gdb.
 
 This directory contains a working prototype of driving the *actual* Democracy 3
-game binary's simulation from outside the process, using gdb under Xvfb.
+game binary's simulation from outside the process, using gdb, a version-pinned
+`LD_PRELOAD` probe, and Xvfb for a headless display.
 
 The game (`Democracy3.bin.x86_64`, v1.30.2) is **not stripped and has
 debug_info** (function-level symbols), so every simulation entry point is
@@ -11,6 +12,8 @@ reachable:
 |--------|---------|---------|
 | `SIM_GetSimulation()` | 0x5ab1a0 | the simulation singleton (instance at 0xa38360) |
 | `SIM_Simulation::NextTurn()` | 0x60e120 | the complete turn step |
+| `SIM_Gameplay::NextTurn()` | 0x5d0f80 | GUI-facing asynchronous turn launcher |
+| `NextTurnThread(void*)` | 0x5cff30 | native full turn worker entrypoint |
 | `SIM_Simulation::GetNeuronByName(std::string)` | 0x60c140 | read any neuron |
 | `SIM_Simulation::Initialise()` | 0x60f560 | initialise a country |
 | `SIM_GlobalEconomy::BackProjectHistory()` | 0x5d1370 | rebuild hidden global history |
@@ -28,11 +31,11 @@ FinanceManager, GlobalEconomy, MinisterManager, PolicyManager,
 PressureGroupManager, SituationManager) and is exactly the step the Python
 simulator reimplements.
 
-## Static follow-up for injection
+## Static and live injection path
 
-The installed binary was inspected with `nm`, `readelf`, and `objdump`; the
-game was not launched during this audit. The load/save singleton storage is
-now pinned down for a future version-specific injector:
+The installed v1.30.2 binary was inspected with `nm`, `readelf`, `objdump`, and
+bounded gdb runs. The load/save singleton storage is pinned down for this
+version-specific injector:
 
 | object | address | guard | constructor |
 |--------|---------|-------|-------------|
@@ -64,7 +67,7 @@ then it calls `SIM_Simulation::ApplyMissionSpecificData(false)`, initializes
 `ProcessGameLoad()`/`NextTurn()`; it is not safe to jump directly to
 `OpenSavedFile()` from the GUI breakpoint.
 
-The voter/party entry points are pinned for the same future injector:
+The voter/party entry points are pinned for follow-up native manager work:
 `SIM_Voter::CalculateApproval()` (0x61b880),
 `SIM_Voter::ConsiderPartyMembership(int)` (0x61d000),
 `SIM_Voter::UpdateIncome()` (0x61e620),
@@ -132,29 +135,92 @@ the live lists or approval modifiers can be reconstructed from XML.
 
 ## What the prototype does
 
-`gdb_drive.py` starts an Xvfb display, launches the game under gdb with
-`harness.gdb`, and reports what is reachable:
+`gdb_drive.py` remains the small reachability probe. `inject_drive.py` uses
+`harness_inject.gdb` and the compiled `libd3probe.so` to:
 
-1. The game reaches `mainLoop()` (the GUI event loop) without the graphics
-   resize crash that otherwise kills it under Xvfb.
-2. `SIM_GetSimulation()` returns the live simulation singleton.
-3. `SIM_Simulation::NextTurn()` is callable and reachable, but requires a
-   country to have been loaded first (calling it here faults in
-   `SIM_Names::GetRandomFullName` — a division by an uninitialized value).
+1. Start one native asynchronous load from the first `mainLoop()` stop.
+2. Wait for the game's loading-complete flag before calling into live objects.
+3. Save the loaded native state through `SIM_SaveGame`.
+4. Optionally write a named neuron's live float slot (`SIM_Neuron + 0x38`) and
+   save that edited state under a separate name.
+5. Run the game's `NextTurnThread` entrypoint synchronously and save the
+   resulting native turn, or use the experimental asynchronous launcher.
+
+The staged breakpoint only stops `mainLoop()` at load/turn boundaries. The
+expensive native worker runs without a breakpoint on every GUI frame.
 
 ## Usage
 
 ```
 PYTHONPATH=. python gamedrive/gdb_drive.py          # default, reports the probe
 PYTHONPATH=. python gamedrive/gdb_drive.py --verbose
+
+# Build and validate the version-pinned injector
+make -C gamedrive
+PYTHONPATH=. uv run python gamedrive/preflight.py
+
+# Load d3_probe_turn0.xml, run the full native worker, and save its output
+PYTHONPATH=. uv run python gamedrive/inject_drive.py \
+  --sync-gameplay-turn --timeout 120
+
+# Load only, then edit one live neuron and persist a separate native save
+PYTHONPATH=. uv run python gamedrive/inject_drive.py --skip-turn \
+  --edit-node GDP --edit-value 0.123
 ```
 
-## The blocker to a full round-trip
+The wrapper reads and writes the installed user's save directory:
+`/home/gopostal/.local/share/democracy3/savegames`. Copy a source capture there
+under a new name first; do not use an existing save name. The wrapper checks
+that required output files exist and returns nonzero on a timeout or missing
+output. The game process is terminated by gdb, and the source capture is not
+modified. Memory edits are intentionally limited to `--skip-turn`; to run a
+turn from an edited state, use the resulting XML as the input to a fresh probe.
 
-Advancing a real game requires a country to be loaded first.  The load flow is
-driven by the GUI (`SIM_LoadGame::LoadGame` -> `ProcessGameLoad` ->
-`SIM_LoadGame::OpenSavedFile` + `LoadGameData` + `SIM_Gameplay::PreLoadGame`/
-`PostLoadGame`).  Driving those C++ calls from gdb is blocked by:
+## Ground-truth results
+
+Using `parity_cases/dem3saves/turn0_initial.xml` as input, the native load
+save (`d3_probe_loaded*.xml`) matched the parser's complete extracted snapshot:
+40 ordinary simvalues, 36 situations, voter aggregates, policy/runtime maps,
+finance fields, party history, and effect-memory records.
+
+The native `NextTurnThread` run produced turn 1. Compared with the Python
+simulator processing the same no-order input:
+
+| section | result |
+|---|---|
+| finance | total income and expenditure exact to serialized float32 values |
+| policies/effect throttles | exact; 123 policies and 61 effect throttles |
+| ordinary simvalues | 14/40 differ; max delta 0.021644, mean delta 0.002241 |
+| situations | 16/36 differ; max delta 0.030829 |
+| voter values | 20/21 differ; max delta 0.111084 |
+| voter percentages | 19/21 differ; max delta 0.496000 |
+| voter frequencies/incomes | frequencies differ below 1e-6; incomes exact |
+
+This is a same-input comparison. `turn1_initial.xml` follows the captured
+`turn0_orders.xml`, so it must not be compared with a native run loaded from
+`turn0_initial.xml` without applying those orders. Loading the captured
+`turn0_orders.xml` directly through this headless path currently exceeds the
+bounded loader timeout; the next step is to drive the native order/slider
+entrypoints rather than treat an orders save as a completed-turn input.
+Probe-produced output XML is still a valuable ground-truth artifact for the
+parser, but reloading an edited/probe-produced save through this loader path
+also currently exceeds the bounded timeout. Treat each probe run as a fresh
+source-capture-to-output operation until that save round-trip is repaired.
+
+## Current limitations and safety boundaries
+
+The load flow is driven by the game's own asynchronous path
+(`SIM_LoadGame::LoadGame` -> `ProcessGameLoad` -> `OpenSavedFile` +
+`LoadGameData` + `PreLoadGame`/`PostLoadGame`). Direct calls to
+`OpenSavedFile()`/`LoadGameData()` from a breakpoint still hang; the probe uses
+the native `LoadGame()` launcher and waits on the completion flag instead.
+
+The `--gameplay-turn` mode is retained as an experiment, but the game's
+`SIM_Gameplay::NextTurn()` thread orchestration can stall under ptrace. Use
+`--sync-gameplay-turn`: it invokes the same `NextTurnThread(void*)` worker and
+manager order synchronously, producing the reliable ground-truth boundary.
+
+The probe is tightly version-pinned:
 
 * the `SIM_GetLoadGame()`/`SIM_GetSaveGame()` getters are **static inline**
   (no symbol), and their singletons are lazily constructed (vtable is zero at
@@ -162,17 +228,13 @@ driven by the GUI (`SIM_LoadGame::LoadGame` -> `ProcessGameLoad` ->
 * gdb has **no usable C++ object layout/type info** beyond the member accesses
   visible in disassembly. The filename offset is pinned, but the remaining
   load/runtime objects still need to be reconstructed;
-* the `LoadGame` flow starts threads and a loading screen, and direct calls
-  into `OpenSavedFile`/`LoadGameData` from the breakpoint hang (no progress);
 * `SIM_Simulation::NextTurn()` without a loaded country SIGFPEs.
 
-The mission selection order above is no longer a blocker; the remaining work
-is reconstructing enough lazy singleton/object layout to drive that sequence
-through the game's thread and loading-screen control path.
+The library performs no constructor-time game calls. All native calls happen
+after an explicit gdb breakpoint, and memory edits are opt-in. Since gdb kills
+the inferior after each bounded run, an edit is process-local; nevertheless,
+always write new save names and retain the original source capture.
 
-A complete harness therefore needs the class layouts pinned down (from
-`objdump`/`readelf` on the `.data.rel.ro` vtables and the constructors) and a
-`SIM_Simulation::Initialise` + `SIM_Mission::Load` sequence driven in the right
-order, after which `NextTurn()` and the
-`SIM_SaveGame::Save*` serializers give exact ground truth that round-trips
-through the existing `autocracy/savegame.py` XML parser.
+A future order-driving harness still needs the native slider/order entrypoints
+and the manager-owned party/income links. Those are the remaining pieces for
+an apples-to-apples replay of the captured 12-turn action sequence.
