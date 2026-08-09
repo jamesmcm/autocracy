@@ -150,6 +150,7 @@ class SimulationData:
     graph: nx.DiGraph
     sim_config: Dict[str, float]
     gamedata_root: Path
+    calibration: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

@@ -7,3 +7,4 @@ gamedata/saves
 !parity_cases/dem3saves/*.xml
 *.lock
 *.pyc
+!autocracy/calibration.json

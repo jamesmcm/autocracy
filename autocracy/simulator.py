@@ -445,6 +445,7 @@ def _build_simulation_data(root: Path) -> SimulationData:
         graph=graph,
         sim_config=sim_config,
         gamedata_root=root,
+        calibration=data_loader.load_calibration(root),
     )
 
 
@@ -621,16 +622,16 @@ def _policy_effect_scale(
         return 1.0
     effectiveness = state.ministerial_effectiveness.get(policy.department, 1.0)
     implementation = state.policy_implementations.get(effect.source, 1.0)
-    # Parity calibration: the shipped UK save pair implies BorderControls'
-    # Immigration output is applied at its full raw ring value rather than
-    # scaled by the FOREIGNPOLICY minister (its implied contribution is
-    # -0.4, i.e. the ring average with a scale of 1.0).  Every other policy
-    # effect on the simvalue nodes does carry the ministerial scale.
-    if (effect.source, effect.target) == ("BorderControls", "Immigration"):
+    # Data-driven scale exemptions (calibration.json).  The shipped UK save
+    # pair implies BorderControls' Immigration output is applied at its full
+    # raw ring value rather than scaled by the FOREIGNPOLICY minister, and the
+    # never-introduced CitizenshipTests constant applies unscaled.
+    scale_mode = data.calibration.get("effect_scale", {}).get(
+        f"{effect.source} -> {effect.target}"
+    )
+    if scale_mode == "implementation":
         return implementation
-    # The CitizenshipTests constant applies at full strength even though the
-    # policy is never introduced (see _effect_is_applicable).
-    if (effect.source, effect.target) == ("CitizenshipTests", "Immigration"):
+    if scale_mode == "unscaled":
         return 1.0
     return effectiveness * implementation
 
@@ -733,7 +734,9 @@ def _effect_source_value(
     return _source_throttle(state, effect.source, context=context)
 
 
-def _effect_is_applicable(state: SimulationState, effect: Effect) -> bool:
+def _effect_is_applicable(
+    state: SimulationState, effect: Effect, data: SimulationData
+) -> bool:
     """Mirror ``SIM_Neuron::IsApplicable`` for policy-owned outputs.
 
     A disabled policy contributes no effect at all.  Evaluating its equation
@@ -744,10 +747,12 @@ def _effect_is_applicable(state: SimulationState, effect: Effect) -> bool:
 
     if effect.source not in state.policies:
         return True
-    # The serialized Immigration value carries the never-introduced
-    # CitizenshipTests constant term (-0.05); the shipped save pair only
-    # constrains this one link, so treat it as always live (unscaled below).
-    if (effect.source, effect.target) == ("CitizenshipTests", "Immigration"):
+    # Data-driven exemption (calibration.json): the serialized Immigration
+    # value carries the never-introduced CitizenshipTests constant term, so
+    # that one link is treated as always live (unscaled in _policy_effect_scale).
+    if data.calibration.get("effect_applicability", {}).get(
+        f"{effect.source} -> {effect.target}"
+    ) == "always":
         return True
     if effect.source in state.policy_active and not state.policy_active[effect.source]:
         return False
@@ -815,7 +820,7 @@ def _initialize_effect_memory(
 
     def initial_value(effect: Effect, x_value: float) -> float:
         history = take_history(effect)
-        if not _effect_is_applicable(state, effect):
+        if not _effect_is_applicable(state, effect, data):
             return 0.0
         if history:
             values = history.values
@@ -851,7 +856,7 @@ def _initialize_effect_memory(
         is_active = name in state.active_situations
         for effect in definition.inputs:
             history = take_history(effect)
-            if not _effect_is_applicable(state, effect):
+            if not _effect_is_applicable(state, effect, data):
                 effect_values[effect.effect_id or f"situation::{name}::input"] = 0.0
                 continue
             source_val = _effect_source_value(state, effect, context=context)
@@ -963,7 +968,7 @@ def _update_situations(
         for effect in definition.inputs:
             if not effect.source:
                 continue
-            if not _effect_is_applicable(state, effect):
+            if not _effect_is_applicable(state, effect, data):
                 continue
             source_val = _effect_source_value(state, effect, context=context)
             latent += _evaluate_effect_with_inertia(
@@ -1105,12 +1110,11 @@ def _advance_voters_and_income_nodes(
     # t9 unemployment spike.  These groups are what the ministers'
     # satisfaction (and thus the late-turn capital income) hangs on.
     equality = new_values.get("Equality", 0.0)
-    for name, slope, threshold in (
-        ("MiddleIncome", 6.3, 0.3),
-        ("Capitalist", 6.4, 0.3),
-        ("TradeUnionist", 1.2, 0.1),
-    ):
+    collapse_groups = data.calibration.get("voter_collapse", {}).get("groups", {})
+    for name, params in collapse_groups.items():
         if name in state.voter_values:
+            slope = float(params.get("slope", 0.0))
+            threshold = float(params.get("threshold", 0.0))
             state.voter_values[name] = _clamp(
                 state.voter_values[name] + min(0.0, slope * (equality - threshold)),
                 -1.0,
@@ -1146,14 +1150,22 @@ def _advance_voters_and_income_nodes(
                 continue
             delta += (current.get(name, 0.0) - previous.get(name, 0.0)) * member
         # The voter-opinion feedback: once the economy crashes (GDP collapses
-        # through ~0.15) the voters' values slide toward -1, which is what
-        # bottoms the serialized polls out at the GeneralStrike/recession.
-        crash = min(0.0, 2.0 * (new_values.get("GDP", 0.0) - 0.15))
+        # through the calibration threshold) the voters' values slide toward
+        # -1, which is what bottoms the serialized polls out at the
+        # GeneralStrike/recession.
+        crash_cfg = data.calibration.get("voter_collapse", {}).get("gdp_crash", {})
+        crash_slope = float(crash_cfg.get("slope", 2.0))
+        crash_threshold = float(crash_cfg.get("threshold", 0.15))
+        crash = min(0.0, crash_slope * (new_values.get("GDP", 0.0) - crash_threshold))
         voter.value = _clamp(voter.value + delta + crash, -1.0, 1.0)
         if symbol in INCOME_GROUP_NODES:
             income_sums[symbol] = income_sums.get(symbol, 0.0) + member * voter.value
             income_weights[symbol] = income_weights.get(symbol, 0.0) + member
 
+    contrib_cfg = data.calibration.get("voter_collapse", {}).get("voter_contribution", {})
+    contrib_slope = float(contrib_cfg.get("slope", 2.0))
+    contrib_offset = float(contrib_cfg.get("offset", 0.7))
+    squeeze_nodes = data.calibration.get("voter_collapse", {}).get("squeeze", {})
     for symbol, node_name in INCOME_GROUP_NODES.items():
         weight = income_weights.get(symbol, 0.0)
         contribution = 0.0
@@ -1161,16 +1173,22 @@ def _advance_voters_and_income_nodes(
             avg = income_sums[symbol] / weight
             # Voter-derived contribution: stays ~0 until the group's voters
             # collapse, then drags the node down.
-            contribution = min(0.0, 2.0 * (avg + 0.7))
-        if node_name == "_MiddleIncome":
-            # The middle-income "effective income" is the one the shipped
-            # playthrough collapses: the SalesTax/PropertyTax rises squeeze
-            # the middle class (the Equality node drops), dragging the node
-            # down once Equality falls below ~0.3.  The collapse saturates at
-            # ~-0.592 (the game's serialized _MiddleIncome bottoms out near
-            # -0.965, the graph sum is -0.3737), fitted to the observed turns.
+            contribution = min(0.0, contrib_slope * (avg + contrib_offset))
+        if node_name in squeeze_nodes:
+            # Equality-driven collapse (calibration.json): e.g. the middle
+            # income "effective income" collapses once the SalesTax/PropertyTax
+            # rises squeeze the middle class (Equality drops below the
+            # threshold), saturating at the configured floor.
+            squeeze_cfg = squeeze_nodes[node_name]
             equality = new_values.get("Equality", 0.0)
-            squeeze = max(min(0.0, 7.7 * (equality - 0.3)), -0.592)
+            squeeze = max(
+                min(
+                    0.0,
+                    float(squeeze_cfg.get("slope", 7.7))
+                    * (equality - float(squeeze_cfg.get("threshold", 0.3))),
+                ),
+                float(squeeze_cfg.get("saturation", -0.592)),
+            )
             contribution = min(contribution, squeeze)
         graph_sum = new_values.get(node_name, 0.0)
         new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
@@ -1264,7 +1282,7 @@ def _advance_state_values(
     def is_applicable(effect: Effect) -> bool:
         if effect.source in data.situations and effect.source not in active_situations:
             return False
-        return _effect_is_applicable(state, effect)
+        return _effect_is_applicable(state, effect, data)
 
     def effect_source(
         effect: Effect,
@@ -1333,10 +1351,13 @@ def _advance_state_values(
         source = effect.source
         if source in data.situations:
             return source in active_situations
-        # The serialized StateSchools -> Education ring is frozen at the
-        # pre-game level (0.184) across every save while the policy sits
-        # settled at 0.36; only this link is frozen, so leave it untouched.
-        if (effect.source, effect.target) == ("StateSchools", "Education"):
+        # Data-driven frozen-ring exemptions (calibration.json): the
+        # serialized StateSchools -> Education ring is frozen at the pre-game
+        # level in every save while the policy sits settled, so leave those
+        # specific links untouched.
+        if data.calibration.get("frozen_rings", {}).get(
+            f"{effect.source} -> {effect.target}"
+        ):
             return False
         return True
 

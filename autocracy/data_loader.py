@@ -442,3 +442,44 @@ def load_country_overrides(mission_dir: Path) -> List[dict]:
         if override_data:
             overrides.append(override_data)
     return overrides
+
+
+_CALIBRATION_PATH = Path(__file__).with_name("calibration.json")
+
+
+def load_calibration(root: Path) -> Dict[str, object]:
+    """Load the parity calibration, defaulting to the shipped values.
+
+    The default calibration lives in ``autocracy/calibration.json`` and
+    reproduces the shipped UK playthrough.  A ``calibration.json`` placed in
+    the gamedata root overrides it, so a different country/gamedata set can be
+    reproduced without editing the simulator.
+    """
+    import json
+
+    defaults: Dict[str, object] = {}
+    if _CALIBRATION_PATH.exists():
+        try:
+            loaded = json.loads(_CALIBRATION_PATH.read_text(encoding=ENCODING))
+            if isinstance(loaded, dict):
+                defaults = loaded
+        except (ValueError, OSError):
+            defaults = {}
+    def _deep_merge(base: object, extra: object) -> object:
+        if isinstance(base, dict) and isinstance(extra, dict):
+            merged = dict(base)
+            for key, value in extra.items():
+                merged[key] = _deep_merge(merged.get(key), value)
+            return merged
+        return extra
+
+    result = json.loads(json.dumps(defaults))
+    path = root / "calibration.json"
+    if path.exists():
+        try:
+            overrides = json.loads(path.read_text(encoding=ENCODING))
+            if isinstance(overrides, dict):
+                result = _deep_merge(result, overrides)  # type: ignore[arg-type]
+        except (ValueError, OSError):
+            pass
+    return result

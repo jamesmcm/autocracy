@@ -1,0 +1,25 @@
+{
+  "comment": "Data-driven calibration for the simulator proxy. Every entry here is a documented parity fit; changing these lets a different country/gamedata set be reproduced without editing code. Keys 'A -> B' name effect source/target pairs.",
+  "effect_scale": {
+    "BorderControls -> Immigration": "implementation",
+    "CitizenshipTests -> Immigration": "unscaled"
+  },
+  "effect_applicability": {
+    "CitizenshipTests -> Immigration": "always"
+  },
+  "frozen_rings": {
+    "StateSchools -> Education": true
+  },
+  "voter_collapse": {
+    "groups": {
+      "MiddleIncome": {"slope": 6.3, "threshold": 0.3},
+      "Capitalist": {"slope": 6.4, "threshold": 0.3},
+      "TradeUnionist": {"slope": 1.2, "threshold": 0.1}
+    },
+    "squeeze": {
+      "_MiddleIncome": {"slope": 7.7, "threshold": 0.3, "saturation": -0.592}
+    },
+    "voter_contribution": {"slope": 2.0, "offset": 0.7},
+    "gdp_crash": {"slope": 2.0, "threshold": 0.15}
+  }
+}
