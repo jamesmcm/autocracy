@@ -19,7 +19,11 @@ DEFAULT_GAME = Path(
 )
 
 REQUIRED_SYMBOLS: dict[str, int] = {
+    "SIM_GetSimulation()": 0x5AB1A0,
     "SIM_LoadGame::LoadMission()": 0x5D9DB0,
+    "SIM_LoadGame::OpenSavedFile(std::string const&)": 0x5D4A90,
+    "SIM_LoadGame::LoadGameData()": 0x5DCBA0,
+    "SIM_LoadGame::ProcessGameLoad()": 0x5DCEE0,
     "SIM_MissionManager::LoadMissions()": 0x5ED4B0,
     "SIM_MissionManager::GetByName(std::string)": 0x5ED750,
     "SIM_MissionManager::SetCurrent(SIM_Mission*)": 0x5EC9D0,
@@ -29,6 +33,8 @@ REQUIRED_SYMBOLS: dict[str, int] = {
     "SIM_Simulation::PreLoad()": 0x60EF50,
     "SIM_Simulation::PostLoad()": 0x60D8F0,
     "SIM_Simulation::NextTurn()": 0x60E120,
+    "SIM_Simulation::GetNeuronByName(std::string)": 0x60C140,
+    "SIM_Simulation::Initialise()": 0x60F560,
     "SIM_NeuralEffect::NextTurn()": 0x5F0210,
     "SIM_GlobalEconomy::BackProjectHistory()": 0x5D1370,
     "SIM_GlobalEconomy::Calculate()": 0x5D14E0,
@@ -42,6 +48,10 @@ REQUIRED_SYMBOLS: dict[str, int] = {
     "SIM_Party::NextTurn()": 0x5F4650,
     "SIM_PartyManager::NextTurn()": 0x5F4920,
     "SIM_SaveGame::SaveParties()": 0x604D40,
+    "SIM_Policy::ForceSlider(float)": 0x5F5BA0,
+    "GRandom::RandUnitFloat()": 0x635310,
+    "GRandom::Init(int, int)": 0x6354A0,
+    "GRandom::RandReal(float, float)": 0x6356F0,
 }
 
 _SYMBOL_LINE = re.compile(r"^[0-9a-fA-F]+\s+\w\s+(.+)$")

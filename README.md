@@ -170,7 +170,7 @@ bootstrap a simulation from an in-game snapshot.
 - Reconstruct the remaining party/sympathy manager state (linked lists,
   activist/poll updates, percentages, and frequencies) from static binary
   analysis and captured saves.
-- Run `gamedrive/preflight.py` to verify the 23 version-specific native symbols
+- Run `gamedrive/preflight.py` to verify the 33 version-specific native symbols
   before continuing gdb/LD_PRELOAD work.
 - Use the binary manager call order and save snapshots to continue the native
   gdb/LD_PRELOAD path; do not launch the installed game on this server.

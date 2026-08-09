@@ -359,8 +359,8 @@ The same audit pinned `SIM_Voter::UpdateIncome()` (0x61e620) and
 membership is rebuilt from runtime per-voter income fields and uses sinusoidal
 windows; the current model uses serialized `inincome` band assignment and does
 not yet apply every dynamic `*_income` effect. The native entries are now part
-of the 23-symbol static preflight, which remains safe and does not launch the
-installed game.
+of the 33-symbol static preflight, which also verifies the load/singleton,
+slider, and RNG hooks; it remains safe and does not launch the installed game.
 
 ### Calibration is data-driven (commit 33222ed)
 

@@ -73,7 +73,10 @@ The voter/party entry points are pinned for the same future injector:
 `SIM_VoterType::ForceVoter(SIM_Voter*, float)` (0x623350),
 `SIM_Party::NextTurn()` (0x5f4650),
 `SIM_PartyManager::NextTurn()` (0x5f4920), and
-`SIM_SaveGame::SaveParties()` (0x604d40). `preflight.py` verifies these
+`SIM_SaveGame::SaveParties()` (0x604d40). The RNG hooks
+`GRandom::Init(int, int)` (0x6354a0), `GRandom::RandUnitFloat()` (0x635310),
+and `GRandom::RandReal(float, float)` (0x6356f0) are pinned as well.
+`preflight.py` verifies these
 alongside the load/turn symbols without starting the installed game.
 
 The global-economy audit also pinned `BackProjectHistory()` (0x5d1370),
