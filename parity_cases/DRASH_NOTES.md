@@ -372,7 +372,7 @@ bridge now preserves nested VoterType `<income>` values and the simulator
 recalculates their direct graph contribution each turn; the manager-added
 per-voter host contribution remains non-serialized. The first ordered
 transition's maximum direct-income error is `1.4e-4`. These native entries are
-now part of the 46-symbol static preflight, which also verifies the
+now part of the 59-symbol static preflight, which also verifies the
 load/singleton, slider, party, and RNG hooks; it remains safe and does not
 launch the installed game.
 
@@ -497,7 +497,10 @@ opposition above 0.7 sympathy only while player sympathy is at most 0.1, with
 the mirrored rule for the player party. Party names are selected by the
 serialized party `type` field, so this works for missions whose party names
 differ. `SIM_Party::NextTurn`'s growth/decline status and pre-transition
-member-count history are also retained.
+member-count history are also retained. The serialized activist history ring
+is shifted in the same pass; its current head is carried forward because the
+native activist count depends on an in-memory approval field that is absent
+from the save.
 
 This closes the high-confidence per-voter transition, but not the whole
 manager model. Native `SIM_VoterManager` and `SIM_VoterType` rebuild linked

@@ -72,7 +72,14 @@ The voter/party entry points are pinned for the same future injector:
 `SIM_VoterType::CalculatePercentage()` (0x6229c0),
 `SIM_VoterType::ForceVoter(SIM_Voter*, float)` (0x623350),
 `SIM_Party::NextTurn()` (0x5f4650),
-`SIM_PartyManager::NextTurn()` (0x5f4920), and
+`SIM_Party::CalculateActivists()` (0x5f4290),
+`SIM_PartyManager::NextTurn()` (0x5f4920),
+`SIM_PartyManager::CalculateActivists()` (0x5f49a0),
+`SIM_PollsManager::CalculateVoteRate()` (0x5fb450),
+`SIM_PollsManager::NextTurn()` (0x5fb750),
+`SIM_Complacency::NextTurn()` (0x5bfc10),
+`SIM_Voter::GetEffectiveApproval()` (0x61c5a0), and
+`SIM_Voter::WillVoteForPlayer()` (0x61db50), and
 `SIM_SaveGame::SaveParties()` (0x604d40). The RNG hooks
 `GRandom::Init(int, int)` (0x6354a0), `GRandom::RandUnitFloat()` (0x635310),
 and `GRandom::RandReal(float, float)` (0x6356f0) are pinned as well.
@@ -115,6 +122,13 @@ links from the per-voter income fields. The simulator now preserves each
 serialized nested VoterType `<income>` value and evaluates its direct graph
 inputs; the manager-added per-voter host links remain a documented runtime
 boundary because they are not serialized.
+
+The static audit also covers `SIM_VoterManager::PreSimulatedNextTurn()`
+(0x620510), `SIM_VoterType::CalculateValue()` (0x622390),
+`SIM_VoterType::AddMostSuitable()` (0x6226d0), and
+`SIM_Voter::CalcEffectOfNeuron()` (0x61a1d0). These entry points make the
+remaining ordering and host-link boundaries explicit without pretending that
+the live lists or approval modifiers can be reconstructed from XML.
 
 ## What the prototype does
 

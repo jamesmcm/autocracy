@@ -1445,6 +1445,12 @@ def _advance_party_memberships(
             party.status = 2
         party.members_last_turn = previous
         party.member_history = [previous, *party.member_history[:9]]
+        # SIM_Party::NextTurn shifts the activist ring even when the live
+        # member count did not change. The current activist count is owned by
+        # the native party list and is not serialized, so retain the loaded
+        # head rather than estimating it from the incomplete approval state.
+        activist = party.activist_history[0] if party.activist_history else 0
+        party.activist_history = [activist, *party.activist_history[:9]]
 
 
 def _advance_voters_and_income_nodes(

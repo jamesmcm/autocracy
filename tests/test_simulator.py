@@ -176,6 +176,10 @@ def test_noop_replay_reconstructs_income_group_memberships():
         assert advanced.voter_percentages[name] == pytest.approx(
             reference.voter_percentages[name]
         )
+    for name in state.parties:
+        assert advanced.parties[name].activist_history[:3] == reference.parties[
+            name
+        ].activist_history[:3]
 
 
 def test_active_situation_outputs_reach_voter_values():

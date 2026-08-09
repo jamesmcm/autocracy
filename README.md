@@ -173,7 +173,8 @@ bootstrap a simulation from an in-game snapshot.
   trade-off is measured in `parity_cases/DRASH_NOTES.md`.
 - Base party/sympathy membership transitions now use the binary-confirmed
   approval transform, simconfig thresholds, party-type lookup, and serialized
-  member-count history. Native manager-owned party lists, activist/poll
+  member-count history; the serialized activist ring also advances with its
+  loaded current head. Native manager-owned party lists, activist-count/poll
   modifiers and dynamic per-voter income-neuron host links remain the main
   parity gap; the
   underlying per-voter fields and VoterType frequency/grudge state are retained
@@ -192,7 +193,7 @@ bootstrap a simulation from an in-game snapshot.
 - Reconstruct the remaining party/sympathy manager state (linked lists and
   activist/poll updates) plus the non-serialized per-voter income-neuron host
   links from static binary analysis and captured saves.
-- Run `gamedrive/preflight.py` to verify the 46 version-specific native symbols
+- Run `gamedrive/preflight.py` to verify the 59 version-specific native symbols
   before continuing gdb/LD_PRELOAD work.
 - Use the binary manager call order and save snapshots to continue the native
   gdb/LD_PRELOAD path; do not launch the installed game on this server.
