@@ -62,8 +62,8 @@ political capital, total income, total expenditure, and net balance. The
   effectiveness to the live value, not to saved raw samples.
 - State snapshots include situations, active situations, hidden global
   neurons, voter histories, policy runtime/multiplier fields, delayed policy
-  throttles, ministerial effectiveness, political-capital points, and effect
-  histories.
+  throttles, ministerial effectiveness, political-capital points, policy
+  finance history rings, and effect histories.
 - When available, `get_initial_state` seeds node and policy values from
   `gamedata/saves/<country>0.xml`, matching the shipped baseline.
 - Policy runtime keeps the current neuron value (`<val>`) separate from the
@@ -95,9 +95,9 @@ about 0.003, with a single remaining outlier (`Immigration`, ~0.03): the
 save pair implies `BorderControls -> Immigration` is applied without the
 ministerial scale, and even then a small residual remains because the game's
 unstored random-system state cannot be reproduced. The ring-update rule
-(only simvalue/situation rings advance every turn; settled policy rings
-keep their older samples) and that calibration are described in
-`SIMULATION.md`.
+(simvalue/situation rings advance each turn; policy rings wait at target
+changes and then drain with post-update samples) and that calibration are
+described in `SIMULATION.md`.
 
 ### Stochastic systems
 
@@ -140,18 +140,21 @@ bootstrap a simulation from an in-game snapshot.
 ### Current parity limits
 
 - The one-pass core now agrees closely with the shipped UK no-op transition,
-  but situation-manager timing and the `Immigration` input aggregate still
-  need focused experiments.
-- Finance is loaded exactly from saves; fresh policy changes need more game
-  captures to close every cost/income discrepancy.
-- Random events, dilemmas, attacks, polls, and other manager-owned systems
-  remain outside the deterministic Phase 0 kernel.
+  with targeted residuals in inertial rings and the captured late-turn
+  `ViolentCrimeRate` value (which is inconsistent with the game's own inputs).
+- Finance is live-recomputed, including debt interest and the global-interest
+  neuron; save parsing also preserves each policy's 20-entry cost/income
+  history ring. The drastic replay's aligned final residual is about -1,225
+  income / -33 expenditure.
+- Party/sympathy poll dynamics, percentages, and frequencies remain the main
+  manager-owned parity gap; stochastic systems stay opt-in and off by default.
 
 ### Next parity work
 
-- Capture additional controlled interventions across short and long
-  implementation delays.
-- Use binary manager call order and save snapshots to recover situation,
-  voter, and finance transitions.
+- Reduce targeted Education/Health/OilSupply/WorkerProductivity ring drift.
+- Reconstruct party/sympathy voter dynamics from static binary analysis and
+  captured saves.
+- Use the binary manager call order and save snapshots to continue the native
+  gdb/LD_PRELOAD path; do not launch the installed game on this server.
 - Keep raw proprietary saves outside the repository; commit only reviewable
   extraction fixtures and reproducible tests.

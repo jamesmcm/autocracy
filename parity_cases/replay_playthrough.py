@@ -76,6 +76,27 @@ def turn_number(path: Path) -> int:
     return int(re.search(r"turn(\d+)_", path.name).group(1))
 
 
+def expected_initial_save(next_turn: int) -> Path | None:
+    """Find the captured initial save for a serialized game turn.
+
+    The final capture is named ``turn11_initial.xml`` but contains
+    ``<turn>12</turn>``.  File names are normally sufficient, but selecting
+    by the save's own turn field keeps the replay aligned at that boundary.
+    """
+
+    direct = SAVES_DIR / f"turn{next_turn}_initial.xml"
+    candidates = [direct] if direct.exists() else []
+    candidates.extend(
+        path
+        for path in sorted(SAVES_DIR.glob("turn*_initial.xml"))
+        if path != direct
+    )
+    for path in candidates:
+        if parse_savegame(path).turn == next_turn:
+            return path
+    return None
+
+
 def main(verbose: bool) -> None:
     data = simulator.load_simulation_data()
     initial = SAVES_DIR / "turn0_initial.xml"
@@ -105,8 +126,8 @@ def main(verbose: bool) -> None:
         state = simulator.process_end_of_turn(state, graph, data=data, config=REPLAY_CONFIG)
 
         # Ground truth: the _initial save for the NEXT turn
-        nxt = SAVES_DIR / f"turn{n + 1}_initial.xml"
-        if not nxt.exists():
+        nxt = expected_initial_save(state.turn)
+        if nxt is None:
             continue
         ref = parse_savegame(nxt)
         income_err = state.total_income - ref.total_income

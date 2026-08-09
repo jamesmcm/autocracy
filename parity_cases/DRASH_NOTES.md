@@ -254,8 +254,9 @@ income err 135 (was 606 before the CitizenshipTests fix).
   PrivateSchools->Education ring), Health (0.034, the StateHealthService->
   Health ring), OilSupply (0.030), WorkerProductivity (0.030).  The remaining
   drifts are all the same ring-timing/source-model class: the game freezes or
-  times its inertial rings differently from the sim's always-shift rule, and
-  the broad fix regresses the income lines, so each needs a targeted case.
+  times its inertial rings differently from the simulator's current targeted
+  policy-boundary rule, and broad freezes regress the income lines, so each
+  needs a targeted case.
 * **Situation latents** (24 diffs): GeneralStrike (-0.083) is the
   `Socialist_perc` party-model gap; RaceRiots/HospitalOvercrowding are driven
   by the anomalous game t12 VCR; SkillsShortage/TeacherShortage follow the
@@ -280,6 +281,25 @@ income err 135 (was 606 before the CitizenshipTests fix).
   then declines slowly, whereas the sim computes income directly from the
   current level — the exact ring dynamics are not cleanly recoverable from
   the saves).
+
+### Follow-up audit (current)
+
+The save bridge now retains both 20-entry per-policy finance rings, in the
+same newest-first order as the game's `SavePolicies` serializer.  The turn
+kernel writes the pre-policy-update live line into the new head, so an active
+policy at its slider floor still contributes its configured minimum amount;
+only a true cancellation writes zero.  `compare-save` compares these ring
+heads while the live maps remain available for order-phase finance updates.
+
+Static disassembly also confirmed that `ApplyInterestRateCalculations` adds
+the global-interest neuron offset (`_global_interest_rates_ - 0.5`) to the
+credit-rating factor before interpolating `INTEREST_RATE_MIN/MAX`; the Python
+rate helper now models that input.  The final capture is serialized as game
+turn 12 in `turn11_initial.xml`, and the replay harness now aligns by the XML
+turn field.  Its final comparison is income -1,225.3 and expenditure -32.5;
+the remaining material state residual is the captured late-turn
+`ViolentCrimeRate` anomaly, followed by targeted inertial-ring and voter-party
+model gaps listed below.
 
 **Precision is not the cause** of the node gaps: full-double and float32-
 throughout node evaluation are byte-identical.  The residuals come from the

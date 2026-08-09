@@ -24,6 +24,35 @@ FinanceManager, GlobalEconomy, MinisterManager, PolicyManager,
 PressureGroupManager, SituationManager) and is exactly the step the Python
 simulator reimplements.
 
+## Static follow-up for injection
+
+The installed binary was inspected with `nm`, `readelf`, and `objdump`; the
+game was not launched during this audit. The load/save singleton storage is
+now pinned down for a future version-specific injector:
+
+| object | address | guard | constructor |
+|--------|---------|-------|-------------|
+| `SIM_LoadGame` | `0xa3aa00` | `0xa3a9f8` | `0x5d39c0` |
+| `SIM_SaveGame` | `0xa3b5c0` | `0xa3a9f0` | `0x602940` |
+| `SIM_FinanceManager` | returned by `SIM_GetFinanceManager()` (`0x5b9790`) | `0xa3a6b0` | `0x5ca880` |
+
+The static turn order is `IssueManager`, `MinisterManager`, `EventManager`,
+`PressureGroupManager`, `PolicyManager`, `GlobalEconomy`,
+`SituationManager`, `FinanceManager::NextTurn`, gameplay date update, all
+`NeuralEffect::NextTurn` calls, neuron value/history updates, then dilemma,
+party, voter, poll, grudge, and the final finance total/history update.
+`SIM_Policy::NextTurn` keeps 20 float samples for cost history at policy
+offset `0x408` and income history at `0x458`, with the newest sample at index
+zero. This is the native behavior mirrored by the Python policy-history
+fields.
+
+`SIM_FinanceManager::ApplyInterestRateCalculations` uses
+`INTEREST_RATE_MIN + (INTEREST_RATE_MAX - INTEREST_RATE_MIN) *
+(_global_interest_rates_ - 0.5 + min((credit_rating / 9)^2, 1))`; the global
+neuron is `SIM_Simulation`'s value at the finance-manager call site. These
+offsets are tied to Democracy 3 v1.30.2 and must be revalidated before any
+`LD_PRELOAD` or gdb command invokes a constructor or member function.
+
 ## What the prototype does
 
 `gdb_drive.py` starts an Xvfb display, launches the game under gdb with

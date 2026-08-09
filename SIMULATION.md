@@ -96,8 +96,8 @@ Common behavioural patterns handled correctly:
 
 3. **End of Turn** (`process_end_of_turn`):
    - Advance policy runtime first: implementation fractions increase by minister effectiveness divided by implementation time, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
-   - Advance the effect vector using the pre-turn policy values as source snapshots. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. Saved rings contain raw samples, not minister-scaled live values.
-      The executable writes a fresh ring sample for every applicable inertial link each turn — including a settled policy (a lowered IncomeTax keeps shifting 0-samples, a raised TobaccoTax keeps shifting −0.8 samples until the leading-window average converges). The simulator mirrors that rule and uses the pre-turn policy snapshot for the one-turn-lagged sample.
+   - Advance the effect vector using the pre-turn policy values as source snapshots while a slider target is still catching up. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. Once a policy target has caught up, the game samples the post-update policy value while the old ring drains. Saved rings contain raw samples, not minister-scaled live values.
+      The executable writes a fresh ring sample for every applicable inertial link each turn — including a settled policy (a lowered IncomeTax keeps shifting 0-samples, a raised TobaccoTax keeps shifting −0.8 samples until the leading-window average converges). The simulator mirrors the target-boundary delay and post-update policy sample.
    - One parity calibration is applied to `BorderControls -> Immigration`: the shipped save pair implies that link is *not* ministerially scaled (its implied contribution is the raw −0.4 ring value). Every other policy effect on the simvalue nodes does carry the ministerial scale.
     - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
     - Derive the income-group nodes (`_LowIncome`/`_MiddleIncome`/`_HighIncome`) from the voter population: each of the 2000 loaded voters' value drifts by the change in the policy + economy-node effects on its voter types, the income node is the graph sum plus a contribution from that income group's voters, and the middle-income node additionally collapses on the middle-class squeeze (Equality below ~0.3).
@@ -195,7 +195,13 @@ uv run main.py node Health --country uk
 
 ### Budget Tracking
 
-- Each `SimulationState` carries `policy_costs`, `policy_incomes`, `total_expenditure`, and `total_income`.
+- Each `SimulationState` carries `policy_costs`, `policy_incomes`,
+  `total_expenditure`, and `total_income`. It also preserves
+  `policy_cost_histories` and `policy_income_histories`, matching the game's
+  20-entry newest-first policy finance rings. The live maps are used during
+  order/turn calculations; the ring head is the value serialized into a save.
+  An active policy at its slider floor still uses its configured minimum
+  amount, while a cancelled policy contributes zero.
 - Income and expenditure are **live-recomputed every turn** to match the game's `<finances>` block:
   - income = sum over *active* income policies of `base(min,max,val) * wealth_mod * earn_scalar * incom_mult`;
   - expenditure = the analogous cost sum, **plus** `wealth_mod ×` the active
@@ -205,7 +211,8 @@ uv run main.py node Health --country uk
   (the game's one-turn history lag), and the ministerial scalars come from the
   current competence (`earn_scalar = 0.875 + 0.25 · competence`, with
   `cost_scalar = 2 - earn_scalar`).  All money arithmetic is rounded to
-  float32, which reproduces the serialized totals exactly.
+  float32, which reproduces the serialized totals exactly. The interest rate
+  also includes the global-interest neuron offset from its 0.5 baseline.
 - The state also tracks the national `debt` (rolled forward by the last net),
   the `credit_rating` (recomputed every other turn from the debt-to-GDP
   ratio) and the `interest_rate` derived from it.
@@ -222,7 +229,7 @@ uv run main.py node Health --country uk
 
 | Function | Description |
 |----------|-------------|
-| `parse_savegame(path)` | Parses the (slightly malformed) XML save into a `SaveGame` dataclass containing all `simvalues`, current policy values, requested policy targets, finance lines, hidden neurons, voter fields, policy runtime fields, the `<inherited>` simvalue block, and serialized effect rings. |
+| `parse_savegame(path)` | Parses the (slightly malformed) XML save into a `SaveGame` dataclass containing all `simvalues`, current policy values, requested policy targets, live finance lines, 20-entry per-policy finance rings, hidden neurons, voter fields, policy runtime fields, the `<inherited>` simvalue block, and serialized effect rings. |
 | `load_state_from_savegame(path, data=None)` | Builds a `SimulationState` seeded from the save (node values, current/desired policy values, runtime fields, and current turn) so the simulator can continue from an in-game snapshot. |
 | `compare_state_to_savegame(state, save, tolerance)` | Produces a `StateComparison` listing value/policy discrepancies and missing entries, making it easy to sanity-check the simulator against the real game. |
 

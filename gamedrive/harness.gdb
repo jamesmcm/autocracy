@@ -21,6 +21,10 @@ printf "  SIM_Simulation::Initialise       = 0x60f560\n"
 printf "  SIM_Policy::ForceSlider          = 0x5f5ba0\n"
 printf "  SIM_LoadGame::OpenSavedFile      = 0x5d4a90\n"
 printf "  SIM_LoadGame::LoadGameData       = 0x5dcba0\n"
+printf "  SIM_LoadGame singleton             = 0xa3aa00 (guard 0xa3a9f8)\n"
+printf "  SIM_SaveGame singleton             = 0xa3b5c0 (guard 0xa3a9f0)\n"
+printf "  SIM_GetFinanceManager              = 0x5b9790\n"
+printf "  SIM_Policy finance rings           = cost +0x408 / income +0x458\n"
 
 printf "== attempting SIM_Simulation::NextTurn() (expected to fault without a country) ==\n"
 call ((void(*)(void*))0x60e120)($sim)
