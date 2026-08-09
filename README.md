@@ -161,6 +161,14 @@ bootstrap a simulation from an in-game snapshot.
 - The one-pass core now agrees closely with the shipped UK no-op transition,
   with targeted residuals in inertial rings and the captured late-turn
   `ViolentCrimeRate` value (which is inconsistent with the game's own inputs).
+- The drastic replay has also been audited against all 40 ordinary serialized
+  `<simvalues>` nodes at the available game-turn checkpoints (1, 2, 3, and 12).
+  At turn 12, 31/40 nodes are within `0.01` and 39/40 are within `0.05`; the
+  largest observed error is `ViolentCrimeRate` (`+0.1976`), followed by
+  `Education` (`+0.0490`). The saved turn-12 crime value is inconsistent with
+  the game's own inputs, so it is tracked separately from the genuine
+  effect-ring drift. Voter values and situation latents are serialized in
+  separate manager-owned sections and remain less exact than the ordinary DAG.
 - Finance is live-recomputed, including debt interest and the global-interest
   neuron; save parsing also preserves each policy's 20-entry cost/income
   history ring. The drastic replay's aligned final residual is about -1,490

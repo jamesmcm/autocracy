@@ -575,3 +575,46 @@ The remaining late party-count drift is not evidence against this link: native
 `CalculateApproval` also applies perception, fundraising, and election
 modifiers before the party manager rebuilds its live lists, none of which are
 serialized in these saves.
+
+### Full ordinary-node audit (current)
+
+The aligned replay was checked against every ordinary node in each captured
+`<simvalues>` block. The corpus exposes 40 such nodes; none are missing from
+the simulator at any available initial-save checkpoint. The replay advances
+through every captured orders file, while direct node comparisons are available
+for game turns 1, 2, 3, and 12.
+
+| game turn | mean absolute error | RMS error | largest absolute error | nodes with abs(error) > 0.01 |
+|-----------|--------------------:|----------:|------------------------:|----------------------------:|
+| 1         | 0.000779            | 0.003495  | Immigration 0.021541     | 1/40 |
+| 2         | 0.001051            | 0.003217  | Immigration 0.017923     | 1/40 |
+| 3         | 0.004874            | 0.015015  | Unemployment 0.078853    | 5/40 |
+| 12        | 0.011585            | 0.033357  | ViolentCrimeRate 0.197643 | 9/40 |
+
+At game turn 12, 31/40 ordinary nodes are within 0.01 and 39/40 are within
+0.05. The largest raw residuals are:
+
+| node | simulator | game save | delta |
+|------|----------:|----------:|------:|
+| ViolentCrimeRate | 0.460260 | 0.262617 | +0.197643 |
+| Education | 0.531657 | 0.482651 | +0.049006 |
+| WorkerProductivity | 0.300882 | 0.272874 | +0.028008 |
+| Health | 0.451179 | 0.425694 | +0.025485 |
+| Environment | 0.658619 | 0.641634 | +0.016985 |
+| Immigration | 0.319348 | 0.302593 | +0.016755 |
+| `_Terrorism` | 0.174257 | 0.161160 | +0.013097 |
+| Unemployment | 0.819091 | 0.808232 | +0.010858 |
+| CO2Emissions | 0.076453 | 0.086736 | -0.010283 |
+
+The turn-12 `ViolentCrimeRate` save value is inconsistent with the game's own
+serialized inputs (which imply a value near 0.42), so it remains reported as
+an observed-save anomaly rather than being hidden from the raw comparison.
+Excluding it, Education is the largest final ordinary-node residual at 0.0490.
+
+For completeness, the separate turn-12 manager-owned fields have these maxima:
+hidden values 0.041724 (`_globaleconomy_`), voter values 0.324360
+(`MiddleIncome`), voter percentages 0.009000, voter frequencies 0.006439,
+voter incomes 0.006777, and situation latents 0.076046 (`GeneralStrike`).
+These larger voter/situation differences are the party-list, approval, and
+non-serialized runtime-state boundary; they are not omitted from the audit by
+the ordinary-node summary above.

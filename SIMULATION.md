@@ -145,6 +145,24 @@ Common behavioural patterns handled correctly:
      --pressure-groups --assassinations --random-seed 42` (the `agent`
      command accepts the same flags).
 
+### Full-node parity audit
+
+The drastic-change replay compares every ordinary node exposed by the captured
+save's `<simvalues>` block, not only headline metrics such as GDP and Health.
+All 40 observed nodes are present in the simulator at the available checkpoints
+(game turns 1, 2, 3, and 12). At the final checkpoint, 31/40 are within 0.01
+of the game and 39/40 are within 0.05. The largest raw difference is the
+captured `ViolentCrimeRate` value (0.1976); the game's turn-12 value is
+inconsistent with its own inputs and is therefore recorded as a save anomaly.
+Excluding that anomaly, the largest ordinary-node residual is Education at
+0.0490, followed by WorkerProductivity and Health.
+
+Voter values, voter percentages/frequencies/incomes, hidden global neurons,
+and situation latents are serialized in separate manager-owned sections rather
+than the ordinary `<simvalues>` block. Those fields are audited separately;
+their remaining differences are dominated by non-serialized party lists,
+approval modifiers, effect throttles, and the global-economy random cursor.
+
 The simulator returns a new state object, but its core update is intentionally ordered rather than fully synchronous: direct effects can cascade to later nodes in the same pass, as they do in the game. The 33-pass `PreCalcCoreSimulation` settling routine used by the executable during initialization is distinct from the normal one-pass turn path.
 
 ---
