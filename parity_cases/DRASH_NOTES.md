@@ -286,6 +286,52 @@ throughout node evaluation are byte-identical.  The residuals come from the
 game's effect-ring/source details and the voter population dynamics
 (membership/percentage/frequency changes).
 
+### Calibration is data-driven (commit 33222ed)
+
+All the parity fits that were previously hard-coded in the simulator now live
+in `autocracy/calibration.json`, loaded through `SimulationData.calibration`
+(deep-merged with an optional `calibration.json` placed in the gamedata
+root).  This covers:
+
+* `effect_scale`: which policy->node links carry the ministerial scale
+  (`BorderControls->Immigration` uses `implementation`; the never-introduced
+  `CitizenshipTests->Immigration` constant is `unscaled`).
+* `effect_applicability`: which links stay live when their policy is inactive.
+* `frozen_rings`: which settled policy rings never shift (`StateSchools->
+  Education`).
+* `voter_collapse`: the equality-collapse slopes per voter group, the income
+  `squeeze` per node (slope/threshold/saturation), the voter contribution and
+  the GDP-crash parameters.
+
+The simulator code contains no named-policy special cases or fitted numeric
+constants anymore, so a different country/gamedata set can be reproduced by
+supplying its own `calibration.json` instead of editing code.  The shipped
+default reproduces the UK playthrough exactly (behavior unchanged).
+
+### External driving of the real game is feasible
+
+`Democracy3.bin.x86_64` (v1.30.2) is **not stripped and has debug_info**, so
+every simulation entry point is available as a symbol:
+
+* `SIM_GetSimulation()` — the simulation singleton
+* `SIM_Simulation::NextTurn()` (0x60e120) — the complete turn step (calls
+  `SIM_EventManager/FinanceManager/GlobalEconomy/MinisterManager/
+  PolicyManager/PressureGroupManager/SituationManager::NextTurn`)
+* `SIM_Simulation::GetNeuronByName(std::string)` — read any neuron
+* `SIM_Policy::ForceSlider(float)` — set a policy slider
+* `SIM_LoadGame::OpenSavedFile(std::string)` + `LoadSimulation()` — loads the
+  same XML saves this repo parses
+* `SIM_SaveGame::Save*()` — serializes the full state back to XML
+* `SIM_Mission::Load(std::string)` — loads a country; the game accepts a
+  `-silent` command-line flag and runs under Xvfb
+
+Two harnesses would give exact parity by construction (it *is* the game):
+gdb-driving (break on `SIM_Simulation::NextTurn`, call load->set-policy->
+NextTurn->save from a command file) or an LD_PRELOAD `.so` exposing a
+set-policy/next-turn/save-state interface.  Either round-trips through the
+existing `savegame.py` XML parser.  The trade-off is weight (needs the
+installed game + Xvfb) and version coupling to the binary's symbols.
+
 * **Random systems.**  No random event changed a policy in this playthrough
   (all changes are paid orders), so the deterministic core covers the policy
   state.  Events/attacks only move voter opinions, which the finance/GDP/PC
