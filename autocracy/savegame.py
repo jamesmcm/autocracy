@@ -44,6 +44,7 @@ class SaveGame:
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    voter_incomes: Dict[str, float] = field(default_factory=dict)
     voter_frequency_grudges: Dict[str, float] = field(default_factory=dict)
     voters: List[Voter] = field(default_factory=list)
     parties: Dict[str, PartyState] = field(default_factory=dict)
@@ -384,6 +385,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
     voter_values: Dict[str, float] = {}
     voter_percentages: Dict[str, float] = {}
     voter_frequencies: Dict[str, float] = {}
+    voter_incomes: Dict[str, float] = {}
     voter_frequency_grudges: Dict[str, float] = {}
     parties: Dict[str, PartyState] = {}
     parties_elem = root.find("parties")
@@ -417,6 +419,12 @@ def parse_savegame(path: str | Path) -> SaveGame:
             try:
                 voter_frequencies[f"{name}_freq"] = float(
                     votertype.findtext("freqval", default="0")
+                )
+            except ValueError:
+                pass
+            try:
+                voter_incomes[f"{name}_income"] = float(
+                    votertype.findtext("income", default="0")
                 )
             except ValueError:
                 pass
@@ -579,6 +587,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         voter_values=voter_values,
         voter_percentages=voter_percentages,
         voter_frequencies=voter_frequencies,
+        voter_incomes=voter_incomes,
         voter_frequency_grudges=voter_frequency_grudges,
         voters=voters,
         parties=parties,
@@ -640,6 +649,9 @@ def state_from_savegame(
         state.values[name] = value
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
+        state.values[name] = value
+    for name, value in save.voter_incomes.items():
+        state.voter_incomes[name] = value
         state.values[name] = value
     state.voter_frequency_grudges = save.voter_frequency_grudges.copy()
     state.voters = [

@@ -138,6 +138,21 @@ def test_voter_frequency_neurons_apply_saved_grudge_inputs():
     )
 
 
+@pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
+def test_voter_income_neurons_preserve_and_advance_saved_values():
+    """Direct nested VoterType income links survive load and one turn."""
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(SAVES_DIR / "turn0_initial.xml", data)
+    initial = parse_savegame(SAVES_DIR / "turn0_initial.xml")
+    assert state.voter_incomes == initial.voter_incomes
+
+    state = _apply_orders(state, graph, data, 0)
+    advanced = simulator.process_end_of_turn(state, graph, data)
+    reference = parse_savegame(SAVES_DIR / "turn1_initial.xml")
+    for name, expected in reference.voter_incomes.items():
+        assert advanced.voter_incomes[name] == pytest.approx(expected, abs=2e-4)
+
+
 @pytest.mark.skipif(not (SAVES_DIR / "turn1_initial.xml").exists(), reason="saves missing")
 def test_active_floor_policy_keeps_minimum_live_income_separate_from_history():
     state, _ = load_state_from_savegame(SAVES_DIR / "turn1_initial.xml")

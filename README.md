@@ -72,8 +72,10 @@ political capital, total income, total expenditure, and net balance. The
   throttles, ministerial effectiveness, political-capital points, policy
   finance history rings, and effect histories.
 - Voter income groups follow the native overlapping sinusoidal curves and
-  `VOTER_GROUP_MEMBERSHIP_THRESHHOLD` floor; the non-serialized income-neuron
-  contribution remains zero unless a caller supplies transient runtime state.
+  `VOTER_GROUP_MEMBERSHIP_THRESHHOLD` floor. Nested VoterType `<income>` values
+  are loaded from saves and their direct graph links are evaluated each turn;
+  the manager's non-serialized per-voter host contribution remains a runtime
+  boundary.
 - VoterType frequency neurons use the native zero-base `[-1, 1]` pass; CSV
   membership percentages seed linked-list population counts, while persistent
   `CreateGrudge(..., <group>_freq, ...)` inputs are restored from saves and
@@ -169,7 +171,8 @@ bootstrap a simulation from an in-game snapshot.
 - Base party/sympathy membership transitions now use the binary-confirmed
   approval transform, simconfig thresholds, party-type lookup, and serialized
   member-count history. Native manager-owned party lists, activist/poll
-  modifiers, and dynamic income-neuron links remain the main parity gap; the
+  modifiers and dynamic per-voter income-neuron host links remain the main
+  parity gap; the
   underlying per-voter fields and VoterType frequency/grudge state are retained
   when loading or snapshotting state.
   Stochastic systems stay opt-in and off by default.
@@ -178,9 +181,9 @@ bootstrap a simulation from an in-game snapshot.
 
 - Reduce targeted Education/Health/OilSupply/WorkerProductivity ring drift.
 - Reconstruct the remaining party/sympathy manager state (linked lists and
-  activist/poll updates) plus the non-serialized dynamic income-neuron links
-  from static binary analysis and captured saves.
-- Run `gamedrive/preflight.py` to verify the 42 version-specific native symbols
+  activist/poll updates) plus the non-serialized per-voter income-neuron host
+  links from static binary analysis and captured saves.
+- Run `gamedrive/preflight.py` to verify the 46 version-specific native symbols
   before continuing gdb/LD_PRELOAD work.
 - Use the binary manager call order and save snapshots to continue the native
   gdb/LD_PRELOAD path; do not launch the installed game on this server.

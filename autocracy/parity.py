@@ -71,6 +71,7 @@ def snapshot_from_savegame(save: SaveGame) -> Dict[str, object]:
             "values": _sorted_values(save.voter_values),
             "percentages": _sorted_values(save.voter_percentages),
             "frequencies": _sorted_values(save.voter_frequencies),
+            "incomes": _sorted_values(save.voter_incomes),
         },
         "parties": {
             name: {

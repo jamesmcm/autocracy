@@ -23,6 +23,7 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.policy_effect_history_started == state.policy_effect_history_started
     assert restored.political_capital_income == state.political_capital_income
     assert restored.voter_frequency_grudges == state.voter_frequency_grudges
+    assert restored.voter_incomes == state.voter_incomes
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
     reloaded = simulator.load_state(out_path)

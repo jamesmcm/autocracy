@@ -111,9 +111,10 @@ top-level party definitions and their member/activist history rings; those
 history values are serialized, while the live member lists remain native
 manager state.
 `SIM_Voter::UpdateIncome()` additionally rebuilds the runtime income-group
-links from the per-voter income fields; the simulator currently retains the
-serialized `inincome` proxy and leaves those dynamic `*_income` links as a
-documented follow-up.
+links from the per-voter income fields. The simulator now preserves each
+serialized nested VoterType `<income>` value and evaluates its direct graph
+inputs; the manager-added per-voter host links remain a documented runtime
+boundary because they are not serialized.
 
 ## What the prototype does
 

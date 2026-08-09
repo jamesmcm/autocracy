@@ -366,11 +366,26 @@ and applies the `VOTER_GROUP_MEMBERSHIP_THRESHHOLD=0.5` floor. The simulator
 now mirrors that assignment and counts the selected linked-list group for the
 income percentages. Across the captured UK saves the formula is within
 `6e-7` of every serialized income-group weight after the first load transition;
-the first voter’s `.916348` wealthy weight is an exact static check. Dynamic
-`*_income` links still depend on a non-serialized income-neuron contribution,
-so they remain an open continuation item. These native entries are now part of
-the 33-symbol static preflight, which also verifies the load/singleton, slider,
-and RNG hooks; it remains safe and does not launch the installed game.
+the first voter’s `.916348` wealthy weight is an exact static check. The save
+bridge now preserves nested VoterType `<income>` values and the simulator
+recalculates their direct graph contribution each turn; the manager-added
+per-voter host contribution remains non-serialized. The first ordered
+transition's maximum direct-income error is `1.4e-4`. These native entries are
+now part of the 46-symbol static preflight, which also verifies the
+load/singleton, slider, party, and RNG hooks; it remains safe and does not
+launch the installed game.
+
+### Native VoterType income-neuron pass (current)
+
+Static disassembly of `SIM_VoterManager::PreCalculateIncome()` (0x620920)
+shows that the manager first updates each voter's runtime income, then writes
+the serialized VoterType income value into all 33 history slots of the nested
+neuron and refreshes its outputs. The ordinary simulation neuron pass therefore
+needs to calculate direct policy/simvalue inputs for these `<income>` neurons
+before the manager-owned host links are applied. `SaveGame` and
+`SimulationState` now retain the values under `<Group>_income`, and the pass is
+covered by a first-transition replay regression. The non-serialized host links
+and the live party lists remain outside the safe deterministic model.
 
 ### Calibration is data-driven (commit 33222ed)
 

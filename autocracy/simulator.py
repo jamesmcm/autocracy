@@ -419,6 +419,9 @@ def _seed_state_from_initial_save(
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
         state.values[name] = value
+    for name, value in save.voter_incomes.items():
+        state.voter_incomes[name] = value
+        state.values[name] = value
     state.voter_frequency_grudges = save.voter_frequency_grudges.copy()
     state.voters = [_copy_voter(v) for v in save.voters]
     state.parties = {
@@ -670,6 +673,17 @@ _SPECIAL_STATE_VALUES = {
 }
 
 _VOTER_NODE_CATEGORIES = {"VOTER", "VOTER_FREQ"}
+
+
+def _voter_income_names(state: SimulationState, graph: nx.DiGraph) -> List[str]:
+    """Return the native nested VoterType income neurons represented here."""
+    names = set(state.voter_incomes)
+    names.update(
+        name
+        for name in graph.nodes
+        if isinstance(name, str) and name.endswith("_income")
+    )
+    return sorted(names)
 
 
 def _source_value(
@@ -1861,6 +1875,22 @@ def _advance_state_values(
         refresh_outputs(node.name, context)
         state.voter_frequencies[node.name] = new_values[node.name]
 
+    # VoterType income neurons are nested manager-owned neurons rather than
+    # rows in simulation.csv.  Their direct policy/simvalue inputs still run
+    # through the ordinary effect vector before VoterManager::NextTurn.  The
+    # manager adds per-voter host links afterward; those links are not
+    # serialized, so retain that native boundary instead of guessing it.
+    for name in _voter_income_names(state, graph):
+        context = {**new_values, **state.policies, **state.situations}
+        new_values[name] = _clamp(
+            _f32(incoming_value(name)),
+            -1.0,
+            1.0,
+        )
+        context[name] = new_values[name]
+        refresh_outputs(name, context)
+        state.voter_incomes[name] = new_values[name]
+
     # The income-group "_" nodes are voter-derived: the graph sum above is
     # the base, and the voter population's collapse drags them down.
     _advance_voters_and_income_nodes(
@@ -2545,6 +2575,7 @@ def process_end_of_turn(
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
+        voter_incomes=runtime_state.voter_incomes.copy(),
         voter_frequency_grudges=runtime_state.voter_frequency_grudges.copy(),
         voters=[_copy_voter(v) for v in runtime_state.voters],
         parties={
@@ -2740,6 +2771,7 @@ def apply_actions(
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
+        voter_incomes=state.voter_incomes.copy(),
         voter_frequency_grudges=state.voter_frequency_grudges.copy(),
         voters=[_copy_voter(v) for v in state.voters],
         parties={
@@ -2885,6 +2917,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "voter_values": state.voter_values,
         "voter_percentages": state.voter_percentages,
         "voter_frequencies": state.voter_frequencies,
+        "voter_incomes": state.voter_incomes,
         "voter_frequency_grudges": state.voter_frequency_grudges,
         "voters": [
             {
@@ -2993,6 +3026,9 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         },
         voter_frequencies={
             k: float(v) for k, v in dict(payload.get("voter_frequencies", {})).items()
+        },
+        voter_incomes={
+            k: float(v) for k, v in dict(payload.get("voter_incomes", {})).items()
         },
         voter_frequency_grudges={
             k: float(v)

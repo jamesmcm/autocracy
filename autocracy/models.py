@@ -235,6 +235,11 @@ class SimulationState:
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
+    # Current values of the nested VoterType income neurons serialized as
+    # ``<income>``.  The native manager may add non-serialized per-voter host
+    # inputs after the ordinary effect pass, so this field retains the loaded
+    # value while the direct graph contribution is recalculated each turn.
+    voter_incomes: Dict[str, float] = field(default_factory=dict)
     # Persistent CreateGrudge inputs targeting VoterType frequency neurons.
     # These are separate from the neuron current value: native SIM_Neuron
     # calculation starts from zero and adds the grudge alongside ordinary
