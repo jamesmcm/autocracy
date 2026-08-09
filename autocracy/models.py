@@ -168,6 +168,22 @@ class Voter:
     value: float = 0.0
     income: float = 0.0
     inincome: float = 0.0
+    # The game persists these per-voter inputs even though most of them are
+    # not exposed as ordinary voter-type neurons.  Keeping them makes a
+    # loaded state round-trip safe for the party/sympathy model.
+    militancy: float = 0.0
+    voting_tech: float = 0.0
+    initial_socialism: float = 0.0
+    initial_liberalism: float = 0.0
+    radicalism: float = 0.0
+    gender: int = 0
+    opposition_sympathy: float = 0.0
+    player_sympathy: float = 0.0
+    last_vote: int = 0
+    survival: int = 0
+    forecast: int = 0
+    party: str = ""
+    organizations: List[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

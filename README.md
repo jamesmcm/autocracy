@@ -66,9 +66,10 @@ political capital, total income, total expenditure, and net balance. The
   policy/simvalue ring residuals therefore remain until that runtime state can
   be recovered.
 - State snapshots include situations, active situations, hidden global
-  neurons, voter histories, policy runtime/multiplier fields, delayed policy
-  throttles, ministerial effectiveness, political-capital points, policy
-  finance history rings, and effect histories.
+  neurons, voter histories, full per-voter party/sympathy inputs, policy
+  runtime/multiplier fields, delayed policy throttles, ministerial
+  effectiveness, political-capital points, policy finance history rings, and
+  effect histories.
 - When available, `get_initial_state` seeds node and policy values from
   `gamedata/saves/<country>0.xml`, matching the shipped baseline.
 - Policy runtime keeps the current neuron value (`<val>`) separate from the
@@ -156,13 +157,17 @@ bootstrap a simulation from an in-game snapshot.
   final expenditure, so the simulator keeps the targeted rule documented in
   `SIMULATION.md`.
 - Party/sympathy poll dynamics, percentages, and frequencies remain the main
-  manager-owned parity gap; stochastic systems stay opt-in and off by default.
+  manager-owned parity gap; the underlying per-voter fields are now retained
+  when loading or snapshotting state. Stochastic systems stay opt-in and off
+  by default.
 
 ### Next parity work
 
 - Reduce targeted Education/Health/OilSupply/WorkerProductivity ring drift.
 - Reconstruct party/sympathy voter dynamics from static binary analysis and
   captured saves.
+- Run `gamedrive/preflight.py` to verify the version-specific native symbols
+  before continuing gdb/LD_PRELOAD work.
 - Use the binary manager call order and save snapshots to continue the native
   gdb/LD_PRELOAD path; do not launch the installed game on this server.
 - Keep raw proprietary saves outside the repository; commit only reviewable

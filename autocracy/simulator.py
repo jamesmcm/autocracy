@@ -50,6 +50,15 @@ def _f32(value: float) -> float:
     return struct.unpack("f", struct.pack("f", float(value)))[0]
 
 
+def _copy_voter(voter: Voter) -> Voter:
+    """Copy mutable voter containers while retaining every runtime field."""
+    return replace(
+        voter,
+        groups=dict(voter.groups),
+        organizations=list(voter.organizations),
+    )
+
+
 def _complete_policy_finance_histories(
     histories: Dict[str, List[float]],
     current_values: Dict[str, float],
@@ -397,10 +406,7 @@ def _seed_state_from_initial_save(
     for name, value in save.voter_frequencies.items():
         state.voter_frequencies[name] = value
         state.values[name] = value
-    state.voters = [
-        Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome)
-        for v in save.voters
-    ]
+    state.voters = [_copy_voter(v) for v in save.voters]
     state.policy_implementations = save.policy_implementations.copy()
     state.policy_active = save.policy_active.copy()
     state.policy_cost_histories = {
@@ -2189,7 +2195,7 @@ def process_end_of_turn(
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
-        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome) for v in runtime_state.voters],
+        voters=[_copy_voter(v) for v in runtime_state.voters],
         policy_implementations=runtime_state.policy_implementations.copy(),
         policy_active=runtime_state.policy_active.copy(),
         policy_cost_multipliers=runtime_state.policy_cost_multipliers.copy(),
@@ -2363,7 +2369,7 @@ def apply_actions(
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
-        voters=[Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome) for v in state.voters],
+        voters=[_copy_voter(v) for v in state.voters],
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=state.policy_cost_multipliers.copy(),
@@ -2502,7 +2508,25 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "voter_percentages": state.voter_percentages,
         "voter_frequencies": state.voter_frequencies,
         "voters": [
-            {"groups": dict(v.groups), "value": v.value, "income": v.income, "inincome": v.inincome}
+            {
+                "groups": dict(v.groups),
+                "value": v.value,
+                "income": v.income,
+                "inincome": v.inincome,
+                "militancy": v.militancy,
+                "voting_tech": v.voting_tech,
+                "initial_socialism": v.initial_socialism,
+                "initial_liberalism": v.initial_liberalism,
+                "radicalism": v.radicalism,
+                "gender": v.gender,
+                "opposition_sympathy": v.opposition_sympathy,
+                "player_sympathy": v.player_sympathy,
+                "last_vote": v.last_vote,
+                "survival": v.survival,
+                "forecast": v.forecast,
+                "party": v.party,
+                "organizations": list(v.organizations),
+            }
             for v in state.voters
         ],
         "policy_implementations": state.policy_implementations,
@@ -2581,6 +2605,19 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
                 value=float(v.get("value", 0.0)),
                 income=float(v.get("income", 0.0)),
                 inincome=float(v.get("inincome", 0.0)),
+                militancy=float(v.get("militancy", 0.0)),
+                voting_tech=float(v.get("voting_tech", 0.0)),
+                initial_socialism=float(v.get("initial_socialism", 0.0)),
+                initial_liberalism=float(v.get("initial_liberalism", 0.0)),
+                radicalism=float(v.get("radicalism", 0.0)),
+                gender=int(v.get("gender", 0)),
+                opposition_sympathy=float(v.get("opposition_sympathy", 0.0)),
+                player_sympathy=float(v.get("player_sympathy", 0.0)),
+                last_vote=int(v.get("last_vote", 0)),
+                survival=int(v.get("survival", 0)),
+                forecast=int(v.get("forecast", 0)),
+                party=str(v.get("party", "")),
+                organizations=[str(org) for org in v.get("organizations", [])],
             )
             for v in payload.get("voters", [])
         ],

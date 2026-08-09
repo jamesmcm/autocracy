@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -129,6 +129,20 @@ def _first_history_value(text: Optional[str]) -> float:
         except ValueError:
             continue
     return 0.0
+
+
+def _voter_float(voter_elem: ET.Element, tag: str) -> float:
+    try:
+        return float(voter_elem.findtext(tag, default="0"))
+    except ValueError:
+        return 0.0
+
+
+def _voter_int(voter_elem: ET.Element, tag: str) -> int:
+    try:
+        return int(float(voter_elem.findtext(tag, default="0")))
+    except ValueError:
+        return 0
 
 
 def _history_values(text: Optional[str]) -> List[float]:
@@ -382,7 +396,32 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 inincome = float(voter_elem.findtext("inincome", default="0"))
             except ValueError:
                 inincome = 0.0
-            voters.append(Voter(groups=groups, value=value, inincome=inincome))
+            organizations = [
+                (name.text or "").strip()
+                for name in voter_elem.findall("orgs/org/name")
+                if (name.text or "").strip()
+            ]
+            voters.append(
+                Voter(
+                    groups=groups,
+                    value=value,
+                    income=_voter_float(voter_elem, "income"),
+                    inincome=inincome,
+                    militancy=_voter_float(voter_elem, "milit"),
+                    voting_tech=_voter_float(voter_elem, "invotech"),
+                    initial_socialism=_voter_float(voter_elem, "insocial"),
+                    initial_liberalism=_voter_float(voter_elem, "inliberal"),
+                    radicalism=_voter_float(voter_elem, "radical"),
+                    gender=_voter_int(voter_elem, "gender"),
+                    opposition_sympathy=_voter_float(voter_elem, "oppsymp"),
+                    player_sympathy=_voter_float(voter_elem, "playsymp"),
+                    last_vote=_voter_int(voter_elem, "lastvote"),
+                    survival=_voter_int(voter_elem, "sur"),
+                    forecast=_voter_int(voter_elem, "fore"),
+                    party=(voter_elem.findtext("party") or "").strip(),
+                    organizations=organizations,
+                )
+            )
     ministerial_effectiveness: Dict[str, float] = {}
     ministerial_competence: Dict[str, float] = {}
     ministerial_experience: Dict[str, float] = {}
@@ -538,7 +577,7 @@ def state_from_savegame(
         state.voter_frequencies[name] = value
         state.values[name] = value
     state.voters = [
-        Voter(groups=dict(v.groups), value=v.value, income=v.income, inincome=v.inincome)
+        replace(v, groups=dict(v.groups), organizations=list(v.organizations))
         for v in save.voters
     ]
     state.policy_implementations = save.policy_implementations.copy()

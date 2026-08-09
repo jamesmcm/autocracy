@@ -53,6 +53,20 @@ neuron is `SIM_Simulation`'s value at the finance-manager call site. These
 offsets are tied to Democracy 3 v1.30.2 and must be revalidated before any
 `LD_PRELOAD` or gdb command invokes a constructor or member function.
 
+The country-load portion is pinned as well. `SIM_LoadGame::LoadMission()`
+calls `SIM_MissionManager::LoadMissions()`, `GetByName()`, and `SetCurrent()`;
+then it calls `SIM_Simulation::ApplyMissionSpecificData(false)`, initializes
+`SIM_Names`, and loads mission options. That sequence must precede
+`ProcessGameLoad()`/`NextTurn()`; it is not safe to jump directly to
+`OpenSavedFile()` from the GUI breakpoint.
+
+Run `preflight.py` before preparing a version-specific injector. It only reads
+the ELF symbol table and never launches the game:
+
+```
+PYTHONPATH=. uv run python gamedrive/preflight.py
+```
+
 The load-flow audit also pinned the `SIM_LoadGame` filename `std::string` at
 `+0x838`. `ProcessGameLoad()` opens that file, calls gameplay release/preload,
 loads the ordered game-data sections, calls gameplay postload, and frees the
@@ -60,6 +74,13 @@ temporary load buffer. `LoadEffects()` restores input-effect throttles and raw
 33-slot histories, but does not serialize the desired output throttle for every
 outgoing effect; this is the runtime state behind the remaining targeted ring
 residuals.
+
+The same save/load boundary applies to voters: `LoadVoters()` restores the
+individual ideology inputs, sympathy fields, party pointer, and organization
+list before `SIM_VoterManager::PostLoad()` rebuilds manager-owned membership
+lists. The XML therefore contains enough per-voter inputs to seed a model, but
+not the manager's live party/group lists; the Python save bridge now preserves
+the serialized inputs instead of silently discarding them.
 
 ## What the prototype does
 
@@ -97,9 +118,13 @@ driven by the GUI (`SIM_LoadGame::LoadGame` -> `ProcessGameLoad` ->
   into `OpenSavedFile`/`LoadGameData` from the breakpoint hang (no progress);
 * `SIM_Simulation::NextTurn()` without a loaded country SIGFPEs.
 
+The mission selection order above is no longer a blocker; the remaining work
+is reconstructing enough lazy singleton/object layout to drive that sequence
+through the game's thread and loading-screen control path.
+
 A complete harness therefore needs the class layouts pinned down (from
 `objdump`/`readelf` on the `.data.rel.ro` vtables and the constructors) and a
-`SIM_Simulation::Initialise` + `SIM_Mission::Load` + `ApplyMissionSpecificData`
-sequence driven in the right order, after which `NextTurn()` and the
+`SIM_Simulation::Initialise` + `SIM_Mission::Load` sequence driven in the right
+order, after which `NextTurn()` and the
 `SIM_SaveGame::Save*` serializers give exact ground truth that round-trips
 through the existing `autocracy/savegame.py` XML parser.

@@ -36,6 +36,37 @@ def test_parse_savegame_extracts_core_sections():
     assert save.total_expenditure > 0
 
 
+@pytest.mark.skipif(not SAVE_PATH.exists(), reason="Savegame file missing")
+def test_parse_savegame_preserves_voter_runtime_fields():
+    save = parse_savegame("parity_cases/dem3saves/turn0_initial.xml")
+    voter = save.voters[0]
+    assert voter.militancy == pytest.approx(0.52753878)
+    assert voter.voting_tech == pytest.approx(0.99177366)
+    assert voter.initial_socialism == pytest.approx(0.87373853)
+    assert voter.initial_liberalism == pytest.approx(0.54105872)
+    assert voter.gender == 1
+    assert voter.opposition_sympathy == pytest.approx(0.0)
+    assert voter.last_vote == 2
+    assert voter.survival == 27
+    assert voter.forecast == 90
+    assert voter.party == "0"
+
+    party_voter = next(v for v in save.voters if v.party == "The National Front")
+    assert party_voter.opposition_sympathy == pytest.approx(1.0)
+
+
+@pytest.mark.skipif(not (Path("parity_cases/dem3saves/turn0_initial.xml")).exists(), reason="parity saves missing")
+def test_state_snapshot_round_trips_voter_runtime_fields():
+    from autocracy.simulator import state_from_dict, state_to_dict
+
+    state, _ = load_state_from_savegame("parity_cases/dem3saves/turn0_initial.xml")
+    restored = state_from_dict(state_to_dict(state))
+    assert restored.voters[0].voting_tech == pytest.approx(
+        state.voters[0].voting_tech
+    )
+    assert restored.voters[0].organizations == state.voters[0].organizations
+
+
 def test_parse_savegame_keeps_policy_target_separate_from_current_value(tmp_path):
     save_path = tmp_path / "target.xml"
     save_path.write_text(

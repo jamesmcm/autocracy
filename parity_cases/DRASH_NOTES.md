@@ -273,8 +273,10 @@ income err 135 (was 606 before the CitizenshipTests fix).
   MiddleIncome) are exact (band reassignment matches 2000/2000), but the
   *other* groups' percentages drift in the game because the voters' party/
   sympathy memberships change over the run, which the static loaded
-  memberships do not reproduce (the party definitions are not in the shipped
-  gamedata — a known blocker).
+  memberships do not reproduce. The save bridge now retains each voter's
+  serialized ideology, sympathy, party, and organization fields; the remaining
+  blocker is rebuilding the native manager-owned membership lists from those
+  inputs.
 * **Voter frequencies** (12 diffs): the `_freq` neurons drift with the voter
   dynamics; the sim keeps the loaded values.
 * **Minister satisfaction** (11 diffs): `0.5 + average` of the two sympathised
@@ -376,7 +378,11 @@ every simulation entry point is available as a symbol:
 
 The static follow-up pinned `SIM_LoadGame`'s filename `std::string` at `+0x838`
 and the `ProcessGameLoad` sequence: open the file, release gameplay, preload,
-load all game data, postload, then free the temporary load buffer. The load
+load all game data, postload, then free the temporary load buffer. The mission
+selection sequence inside `LoadMission()` is also pinned:
+`LoadMissions()` -> `GetByName()` -> `SetCurrent()` ->
+`ApplyMissionSpecificData(false)` -> `SIM_Names::Initialise()` -> mission
+options. This must happen before the loaded simulation is advanced. The load
 order reaches `LoadEffects` after simulation/gameplay data; that routine
 restores input throttles and raw effect histories but not every outgoing
 desired throttle. This is the missing runtime state behind the targeted ring
@@ -407,10 +413,10 @@ under Xvfb + gdb and prove the driving is reachable:
 and their singletons are lazily constructed; gdb has no usable C++ object
 layout/type information beyond the member accesses visible in disassembly;
 and direct calls into `OpenSavedFile`/`LoadGameData` from the breakpoint hang.
-The filename offset and load call order are now pinned, but completing the
-round-trip still needs the remaining class/runtime layout plus a
-`SIM_Simulation::Initialise` + `SIM_Mission::Load` +
-`ApplyMissionSpecificData` sequence before `NextTurn()` and the
+The filename offset and load call order are now pinned, as is the mission
+selection sequence. Completing the round-trip still needs the remaining
+class/runtime layout and a safe way through the game's loading thread before
+`SIM_Simulation::Initialise`, `NextTurn()`, and the
 `SIM_SaveGame::Save*` serializers can round-trip through `savegame.py`.
 
 * **Random systems.**  No random event changed a policy in this playthrough
