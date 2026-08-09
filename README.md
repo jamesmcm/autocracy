@@ -156,16 +156,19 @@ bootstrap a simulation from an in-game snapshot.
   effect-ring throttle/load state; a broad pre-update sampling rule regresses
   final expenditure, so the simulator keeps the targeted rule documented in
   `SIMULATION.md`.
-- Party/sympathy poll dynamics, percentages, and frequencies remain the main
-  manager-owned parity gap; the underlying per-voter fields are now retained
-  when loading or snapshotting state. Stochastic systems stay opt-in and off
-  by default.
+- Base party/sympathy membership transitions now use the binary-confirmed
+  approval transform, simconfig thresholds, party-type lookup, and serialized
+  member-count history. Native manager-owned party lists, activist/poll
+  modifiers, percentages, and frequencies remain the main parity gap; the
+  underlying per-voter fields are retained when loading or snapshotting state.
+  Stochastic systems stay opt-in and off by default.
 
 ### Next parity work
 
 - Reduce targeted Education/Health/OilSupply/WorkerProductivity ring drift.
-- Reconstruct party/sympathy voter dynamics from static binary analysis and
-  captured saves.
+- Reconstruct the remaining party/sympathy manager state (linked lists,
+  activist/poll updates, percentages, and frequencies) from static binary
+  analysis and captured saves.
 - Run `gamedrive/preflight.py` to verify the version-specific native symbols
   before continuing gdb/LD_PRELOAD work.
 - Use the binary manager call order and save snapshots to continue the native

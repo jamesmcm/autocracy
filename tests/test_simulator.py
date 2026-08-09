@@ -6,7 +6,7 @@ import pytest
 
 from autocracy import simulator
 from autocracy.agent import PassiveAgent
-from autocracy.models import PolicyAction
+from autocracy.models import PartyState, PolicyAction, Voter
 from autocracy.savegame import parse_savegame
 
 
@@ -95,6 +95,46 @@ def test_process_end_of_turn_advances_turn_and_updates_values():
     next_state = simulator.process_end_of_turn(state, graph)
     assert next_state.turn == state.turn + 1
     assert next_state.values["GDP"] != pytest.approx(state.values["GDP"])
+
+
+def test_party_membership_uses_native_approval_and_sympathy_guards():
+    data = simulator.load_simulation_data()
+    state, _ = simulator.get_initial_state("uk")
+    state.voters = [
+        # Approval is 0, so opposition sympathy rises and this voter joins.
+        Voter(value=-1.0, opposition_sympathy=0.7, player_sympathy=0.1),
+        # Raw value -0.7 maps to approval 0.15; it is not below the 0.1
+        # opposition-gain threshold.
+        Voter(value=-0.7, party="0"),
+        # A strongly approving unaffiliated voter joins the player party.
+        Voter(value=1.0, player_sympathy=0.7, party="0"),
+        # An existing opposition member below the leave threshold departs.
+        Voter(
+            value=1.0,
+            opposition_sympathy=0.1,
+            party="Opposition",
+        ),
+    ]
+    state.parties = {
+        "Opposition": PartyState("Opposition", party_type=1, member_history=[4]),
+        "Player": PartyState("Player", party_type=0, member_history=[2]),
+    }
+
+    simulator._advance_party_memberships(state, data)
+
+    assert state.voters[0].opposition_sympathy == pytest.approx(0.8)
+    assert state.voters[0].party == "Opposition"
+    assert state.voters[1].opposition_sympathy == pytest.approx(0.0)
+    assert state.voters[1].party == "0"
+    assert state.voters[2].player_sympathy == pytest.approx(0.8)
+    assert state.voters[2].party == "Player"
+    assert state.voters[3].party == "0"
+    assert state.parties["Opposition"].status == 0
+    assert state.parties["Opposition"].members_last_turn == 1
+    assert state.parties["Opposition"].member_history == [1, 4]
+    assert state.parties["Player"].status == 2
+    assert state.parties["Player"].members_last_turn == 0
+    assert state.parties["Player"].member_history == [0, 2]
 
 
 def test_passive_agent_step_runs_single_loop():

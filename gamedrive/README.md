@@ -60,6 +60,16 @@ then it calls `SIM_Simulation::ApplyMissionSpecificData(false)`, initializes
 `ProcessGameLoad()`/`NextTurn()`; it is not safe to jump directly to
 `OpenSavedFile()` from the GUI breakpoint.
 
+The voter/party entry points are pinned for the same future injector:
+`SIM_Voter::CalculateApproval()` (0x61b880),
+`SIM_Voter::ConsiderPartyMembership(int)` (0x61d000),
+`SIM_VoterManager::PreJoinParties()` (0x6208e0),
+`SIM_VoterType::CalculatePercentage()` (0x6229c0),
+`SIM_Party::NextTurn()` (0x5f4650),
+`SIM_PartyManager::NextTurn()` (0x5f4920), and
+`SIM_SaveGame::SaveParties()` (0x604d40). `preflight.py` verifies these
+alongside the load/turn symbols without starting the installed game.
+
 Run `preflight.py` before preparing a version-specific injector. It only reads
 the ELF symbol table and never launches the game:
 

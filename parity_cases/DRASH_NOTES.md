@@ -426,3 +426,30 @@ class/runtime layout and a safe way through the game's loading thread before
   pursued, the game consumes its seed-1 random stream by collecting the
   events whose value crossed their threshold each turn and picking one with
   `GRandom::RandomChoice`.
+
+### Static party-membership audit (current)
+
+The party branch is now partially modeled from the v1.30.2 binary rather than
+from raw-value guesses. `SIM_Voter::CalculateApproval()` first maps the saved
+voter value through `(value + 1) * 0.5` and stores the result in a runtime
+approval field. `SIM_Voter::ConsiderPartyMembership(1)` then updates
+opposition/player sympathy using the `VOTER_*_SYMPATHY_*` thresholds and gains
+from `simconfig.txt`.
+
+The simulator now applies that base sympathy step before advancing the next
+voter value. It also reproduces the statically identified membership rules:
+existing members leave below 0.2 sympathy; an unaffiliated voter joins the
+opposition above 0.7 sympathy only while player sympathy is at most 0.1, with
+the mirrored rule for the player party. Party names are selected by the
+serialized party `type` field, so this works for missions whose party names
+differ. `SIM_Party::NextTurn`'s growth/decline status and pre-transition
+member-count history are also retained.
+
+This closes the high-confidence per-voter transition, but not the whole
+manager model. Native `SIM_VoterManager` and `SIM_VoterType` rebuild linked
+membership lists during load, calculate percentage neurons from those lists,
+and update party activist/poll state in separate manager passes. Those lists
+are not serialized, and the saved approval also has perception/fundraising/
+election modifiers that are not yet modeled. The late replay therefore still
+has a measured party-count and poll residual when the simulator's voter-value
+approximation diverges.

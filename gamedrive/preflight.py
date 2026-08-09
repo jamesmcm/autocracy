@@ -30,6 +30,13 @@ REQUIRED_SYMBOLS: dict[str, int] = {
     "SIM_Simulation::PostLoad()": 0x60D8F0,
     "SIM_Simulation::NextTurn()": 0x60E120,
     "SIM_NeuralEffect::NextTurn()": 0x5F0210,
+    "SIM_Voter::CalculateApproval()": 0x61B880,
+    "SIM_Voter::ConsiderPartyMembership(int)": 0x61D000,
+    "SIM_VoterManager::PreJoinParties()": 0x6208E0,
+    "SIM_VoterType::CalculatePercentage()": 0x6229C0,
+    "SIM_Party::NextTurn()": 0x5F4650,
+    "SIM_PartyManager::NextTurn()": 0x5F4920,
+    "SIM_SaveGame::SaveParties()": 0x604D40,
 }
 
 _SYMBOL_LINE = re.compile(r"^[0-9a-fA-F]+\s+\w\s+(.+)$")

@@ -1144,6 +1144,145 @@ def _effects_on_voter_types(
     return totals
 
 
+def _advance_party_memberships(
+    state: SimulationState,
+    data: SimulationData,
+) -> None:
+    """Advance the native voter sympathy and party-membership step.
+
+    Static analysis of ``SIM_Voter::ConsiderPartyMembership`` shows that the
+    method consumes the approval value calculated at the end of the previous
+    turn.  Before the optional perception modifiers, that value is
+    ``(voter.value + 1) * 0.5``.  The simulator does not yet model those
+    modifiers, but retaining this base transform reproduces the captured
+    sympathy thresholds without treating the raw ``[-1, 1]`` value as a
+    percentage.
+
+    The live party manager owns its voter lists, so the save only exposes the
+    member-count history.  We update that history from the pre-transition
+    counts, matching the game's ``memberslastturn`` field, while retaining
+    the per-voter party string for the next turn.
+    """
+    if not state.voters:
+        return
+
+    opposition_party = next(
+        (
+            name
+            for name, party in state.parties.items()
+            if party.party_type == 1
+        ),
+        None,
+    )
+    player_party = next(
+        (
+            name
+            for name, party in state.parties.items()
+            if party.party_type == 0
+        ),
+        None,
+    )
+    previous_counts = {
+        name: sum(1 for voter in state.voters if voter.party == name)
+        for name in state.parties
+    }
+
+    opposition_increase = data.sim_config.get(
+        "VOTER_OPPOSITION_INCREASE_SYMPATHY_BELOW", 0.1
+    )
+    opposition_decrease = data.sim_config.get(
+        "VOTER_OPPOSITION_DECREASE_SYMPATHY_ABOVE", 0.15
+    )
+    opposition_gain = data.sim_config.get(
+        "VOTER_OPPOSITON_SYMPATHY_GAIN", 0.1
+    )
+    opposition_decay = data.sim_config.get(
+        "VOTER_OPPOSITON_SYMPATHY_DECAY", 0.1
+    )
+    opposition_join = data.sim_config.get(
+        "VOTER_OPPOSITION_JOIN_THRESHHOLD", 0.7
+    )
+    opposition_leave = data.sim_config.get(
+        "VOTER_OPPOSITION_LEAVE_THRESHHOLD", 0.2
+    )
+    player_increase = data.sim_config.get(
+        "VOTER_PLAYER_INCREASE_SYMPATHY_ABOVE", 0.9
+    )
+    player_decrease = data.sim_config.get(
+        "VOTER_PLAYER_DECREASE_SYMPATHY_BELOW", 0.85
+    )
+    player_gain = data.sim_config.get("VOTER_PLAYER_SYMPATHY_GAIN", 0.1)
+    player_decay = data.sim_config.get("VOTER_PLAYER_SYMPATHY_DECAY", 0.1)
+    player_join = data.sim_config.get("VOTER_PLAYER_JOIN_THRESHHOLD", 0.7)
+    player_leave = data.sim_config.get("VOTER_PLAYER_LEAVE_THRESHHOLD", 0.2)
+
+    for voter in state.voters:
+        approval = _clamp((voter.value + 1.0) * 0.5, 0.0, 1.0)
+
+        if approval < opposition_increase:
+            voter.opposition_sympathy = _clamp(
+                voter.opposition_sympathy + opposition_gain,
+                0.0,
+                1.0,
+            )
+        elif approval > opposition_decrease:
+            voter.opposition_sympathy = _clamp(
+                voter.opposition_sympathy - opposition_decay,
+                0.0,
+                1.0,
+            )
+
+        if approval > player_increase:
+            voter.player_sympathy = _clamp(
+                voter.player_sympathy + player_gain,
+                0.0,
+                1.0,
+            )
+        elif approval < player_decrease:
+            voter.player_sympathy = _clamp(
+                voter.player_sympathy - player_decay,
+                0.0,
+                1.0,
+            )
+
+        if voter.party == opposition_party and opposition_party is not None:
+            if voter.opposition_sympathy < opposition_leave:
+                voter.party = "0"
+        elif voter.party == player_party and player_party is not None:
+            if voter.player_sympathy < player_leave:
+                voter.party = "0"
+        elif voter.party in ("", "0"):
+            # The executable keeps a voter from joining one party while it
+            # has meaningful sympathy for the other.  The 0.1 cross-party
+            # guard is a native constant, not a simconfig entry.
+            if (
+                opposition_party is not None
+                and voter.opposition_sympathy > opposition_join
+                and voter.player_sympathy <= 0.1
+            ):
+                voter.party = opposition_party
+            elif (
+                player_party is not None
+                and voter.player_sympathy > player_join
+                and voter.opposition_sympathy <= 0.1
+            ):
+                voter.party = player_party
+
+    for name, party in state.parties.items():
+        previous = previous_counts[name]
+        # SIM_Party::NextTurn compares the serialized previous count with
+        # the live list before replacing ``memberslastturn``.  Its status is
+        # 0 for growth, 1 for decline, and 2 for an unchanged membership.
+        if previous > party.members_last_turn:
+            party.status = 0
+        elif previous < party.members_last_turn:
+            party.status = 1
+        else:
+            party.status = 2
+        party.members_last_turn = previous
+        party.member_history = [previous, *party.member_history[:9]]
+
+
 def _advance_voters_and_income_nodes(
     state: SimulationState,
     data: SimulationData,
@@ -1163,6 +1302,7 @@ def _advance_voters_and_income_nodes(
     """
     if not state.voters:
         return
+    _advance_party_memberships(state, data)
     context = {**new_values, **state.policies, **state.situations}
     source = source_policies if source_policies is not None else state.policies
     previous_context = {**state.values, **source, **state.situations}
