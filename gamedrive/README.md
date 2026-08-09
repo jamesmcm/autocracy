@@ -13,6 +13,10 @@ reachable:
 | `SIM_Simulation::NextTurn()` | 0x60e120 | the complete turn step |
 | `SIM_Simulation::GetNeuronByName(std::string)` | 0x60c140 | read any neuron |
 | `SIM_Simulation::Initialise()` | 0x60f560 | initialise a country |
+| `SIM_GlobalEconomy::BackProjectHistory()` | 0x5d1370 | rebuild hidden global history |
+| `SIM_GlobalEconomy::Calculate()` | 0x5d14e0 | calculate the global cycle/random factor |
+| `SIM_GlobalEconomy::NextTurn()` | 0x5d1670 | advance the global cycle |
+| `SIM_Voter::UpdateIncome()` | 0x61e620 | rebuild per-voter income groups |
 | `SIM_Policy::ForceSlider(float)` | 0x5f5ba0 | set a policy slider |
 | `SIM_LoadGame::OpenSavedFile(std::string)` | 0x5d4a90 | open a save XML |
 | `SIM_LoadGame::LoadGameData()` | 0x5dcba0 | load the full state |
@@ -63,12 +67,21 @@ then it calls `SIM_Simulation::ApplyMissionSpecificData(false)`, initializes
 The voter/party entry points are pinned for the same future injector:
 `SIM_Voter::CalculateApproval()` (0x61b880),
 `SIM_Voter::ConsiderPartyMembership(int)` (0x61d000),
+`SIM_Voter::UpdateIncome()` (0x61e620),
 `SIM_VoterManager::PreJoinParties()` (0x6208e0),
 `SIM_VoterType::CalculatePercentage()` (0x6229c0),
+`SIM_VoterType::ForceVoter(SIM_Voter*, float)` (0x623350),
 `SIM_Party::NextTurn()` (0x5f4650),
 `SIM_PartyManager::NextTurn()` (0x5f4920), and
 `SIM_SaveGame::SaveParties()` (0x604d40). `preflight.py` verifies these
 alongside the load/turn symbols without starting the installed game.
+
+The global-economy audit also pinned `BackProjectHistory()` (0x5d1370),
+`Calculate()` (0x5d14e0), and `NextTurn()` (0x5d1670). `Calculate()` calls
+`GRandom::RandReal(0.9, 1.1)` after the sinusoidal cycle term. The save stores
+the resulting hidden value and its 33-slot history, but not the random-array
+cursor, so the Python bridge preserves the observed history without inventing
+a deterministic multiplier sequence.
 
 Run `preflight.py` before preparing a version-specific injector. It only reads
 the ELF symbol table and never launches the game:
@@ -94,6 +107,10 @@ the serialized inputs instead of silently discarding them. It also retains the
 top-level party definitions and their member/activist history rings; those
 history values are serialized, while the live member lists remain native
 manager state.
+`SIM_Voter::UpdateIncome()` additionally rebuilds the runtime income-group
+links from the per-voter income fields; the simulator currently retains the
+serialized `inincome` proxy and leaves those dynamic `*_income` links as a
+documented follow-up.
 
 ## What the prototype does
 

@@ -404,6 +404,9 @@ def _seed_state_from_initial_save(
     state.political_capital_income = save.political_capital
     for name, value in save.hidden_values.items():
         state.values[name] = value
+    state.hidden_histories = {
+        name: list(values) for name, values in save.hidden_histories.items()
+    }
     for name, value in save.voter_values.items():
         state.voter_values[name] = value
         state.values[name] = value
@@ -1469,8 +1472,10 @@ def _advance_state_values(
             2.0 * math.pi * global_position
         )
     if "_year" in new_values:
-        # The game writes the seasonal year neuron from the turn being closed.
-        new_values["_year"] = (state.turn % 4) / 4.0
+        # The game writes a monotonic quarter counter from the turn being
+        # closed.  It is not modulo-four seasonal phase: the captured hidden
+        # neuron is 0, 0, .25, .5, ..., 2.75 across the observed saves.
+        new_values["_year"] = state.turn / 4.0
     if "_effectivedebt_" in new_values:
         # The effective-debt neuron is the debt-to-(DEBT_TO_GDP_MAX*GDP) ratio
         # recomputed every turn; the situation manager reads it as a source
@@ -1557,10 +1562,10 @@ def _advance_state_values(
     #
     # The serialized rings show that the executable writes a fresh sample for
     # simvalue and situation sources every turn (situations only while
-    # active).  A policy ring waits through the first process after a target
-    # change, then samples the post-update policy value while its old window
-    # drains; settled links continue shifting until their leading window has
-    # caught up.
+    # active). A policy ring retains its old head for the first process after
+    # a target change, then samples the pre-Policy::NextTurn value while the
+    # policy ramps; settled links continue shifting until their leading window
+    # has caught up.
     def should_shift(effect: Effect) -> bool:
         # The game writes a fresh sample into every applicable inertial ring
         # once the policy target boundary is crossed (the serialized rings
@@ -1571,14 +1576,12 @@ def _advance_state_values(
         if source in data.situations:
             return source in active_situations
         if source in state.policies:
-            # Policy::NextTurn waits until the requested slider target has
-            # caught up with the policy neuron before writing the first new
-            # sample.  This gives a one-turn delay after an order (IncomeTax
-            # and TobaccoTax show it in the captured rings), then samples the
-            # post-update policy value while the old ring drains.
-            previous = pre_policy_values.get(source, state.policies[source])
-            target = state.policy_desired_throttles.get(source, previous)
-            if abs(target - previous) > EPSILON:
+            # The native manager suppresses only the first pass after a
+            # slider move.  It then samples the ramping policy value while
+            # implementation is still in progress; waiting for the target
+            # would leave long-delay links frozen indefinitely (as happened
+            # to StateHealthService in the captured turn-12 save).
+            if state.policy_effect_history_delays.get(source, 0) > 0:
                 return False
         # Data-driven frozen-ring exemptions (calibration.json): the
         # serialized StateSchools -> Education ring is frozen at the pre-game
@@ -1614,11 +1617,13 @@ def _advance_state_values(
                 continue
             new_effects[effect.effect_id] = 0.0
             continue
-        sample_policy_values = (
-            state.policies
-            if effect.source in state.policies and should_shift(effect)
-            else pre_policy_values
-        )
+        # The effect manager samples a policy's value before Policy::NextTurn
+        # advances the slider neuron.  For a delayed implementation this is
+        # the value from the preceding save (StateHealthService's
+        # -0.507/-0.436/-0.366 ring samples make the ordering observable).
+        # Introduced policies already have their target in pre_policy_values,
+        # so the same rule covers both paths.
+        sample_policy_values = pre_policy_values
         raw_value = evaluate_expression(
             effect.expression,
             effect_source(effect, pre_context, policy_values=sample_policy_values),
@@ -2345,6 +2350,12 @@ def process_end_of_turn(
         policy_cost_histories=policy_cost_histories,
         policy_income_histories=policy_income_histories,
         global_economy_position=global_position,
+        hidden_histories={
+            name: [new_values[name], *values[:32]]
+            if name in new_values
+            else list(values)
+            for name, values in runtime_state.hidden_histories.items()
+        },
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
@@ -2361,6 +2372,11 @@ def process_end_of_turn(
         policy_income_scalars=runtime_state.policy_income_scalars.copy(),
         effect_throttles=runtime_state.effect_throttles.copy(),
         policy_desired_throttles=runtime_state.policy_desired_throttles.copy(),
+        policy_effect_history_delays={
+            name: remaining - 1
+            for name, remaining in runtime_state.policy_effect_history_delays.items()
+            if remaining > 1
+        },
         ministerial_effectiveness=effectiveness,
         ministerial_competence=competence,
         ministerial_experience=experience,
@@ -2442,6 +2458,7 @@ def apply_actions(
     policy_active = state.policy_active.copy()
     policy_implementations = state.policy_implementations.copy()
     effect_throttles = state.effect_throttles.copy()
+    policy_effect_history_delays = state.policy_effect_history_delays.copy()
     capital = state.political_capital
     for action in actions:
         policy = data.policies.get(action.policy_name)
@@ -2499,6 +2516,9 @@ def apply_actions(
             policy_active[policy.name] = False
         else:
             policy_active[policy.name] = True
+            # Native policy effects retain the old ring for the first turn
+            # after a raise/lower order, then follow the implementation ramp.
+            policy_effect_history_delays[policy.name] = 1
     new_state = SimulationState(
         country=state.country,
         turn=state.turn,
@@ -2523,6 +2543,10 @@ def apply_actions(
             for name, values in state.policy_income_histories.items()
         },
         global_economy_position=state.global_economy_position,
+        hidden_histories={
+            name: list(values)
+            for name, values in state.hidden_histories.items()
+        },
         voter_values=state.voter_values.copy(),
         voter_percentages=state.voter_percentages.copy(),
         voter_frequencies=state.voter_frequencies.copy(),
@@ -2538,6 +2562,7 @@ def apply_actions(
         policy_income_scalars=state.policy_income_scalars.copy(),
         effect_throttles=effect_throttles,
         policy_desired_throttles=policy_desired_throttles,
+        policy_effect_history_delays=policy_effect_history_delays,
         ministerial_effectiveness=state.ministerial_effectiveness.copy(),
         ministerial_competence=state.ministerial_competence.copy(),
         ministerial_experience=state.ministerial_experience.copy(),
@@ -2664,6 +2689,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "total_expenditure": state.total_expenditure,
         "total_income": state.total_income,
         "global_economy_position": state.global_economy_position,
+        "hidden_histories": state.hidden_histories,
         "voter_values": state.voter_values,
         "voter_percentages": state.voter_percentages,
         "voter_frequencies": state.voter_frequencies,
@@ -2707,6 +2733,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "policy_income_scalars": state.policy_income_scalars,
         "effect_throttles": state.effect_throttles,
         "policy_desired_throttles": state.policy_desired_throttles,
+        "policy_effect_history_delays": state.policy_effect_history_delays,
         "ministerial_effectiveness": state.ministerial_effectiveness,
         "ministerial_competence": state.ministerial_competence,
         "ministerial_experience": state.ministerial_experience,
@@ -2762,6 +2789,10 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         total_expenditure=float(payload.get("total_expenditure", 0.0)),
         total_income=float(payload.get("total_income", 0.0)),
         global_economy_position=float(payload.get("global_economy_position", 0.0)),
+        hidden_histories={
+            k: [float(value) for value in values]
+            for k, values in dict(payload.get("hidden_histories", {})).items()
+        },
         voter_values={k: float(v) for k, v in dict(payload.get("voter_values", {})).items()},
         voter_percentages={
             k: float(v) for k, v in dict(payload.get("voter_percentages", {})).items()
@@ -2835,6 +2866,10 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         policy_desired_throttles={
             k: float(v)
             for k, v in dict(payload.get("policy_desired_throttles", {})).items()
+        },
+        policy_effect_history_delays={
+            k: int(v)
+            for k, v in dict(payload.get("policy_effect_history_delays", {})).items()
         },
         ministerial_effectiveness={
             k: float(v)

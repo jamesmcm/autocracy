@@ -7,7 +7,7 @@ import pytest
 from autocracy import simulator
 from autocracy.agent import PassiveAgent
 from autocracy.models import PartyState, PolicyAction, Voter
-from autocracy.savegame import parse_savegame
+from autocracy.savegame import load_state_from_savegame, parse_savegame
 
 
 def test_state_serialization_round_trip(tmp_path):
@@ -135,6 +135,58 @@ def test_party_membership_uses_native_approval_and_sympathy_guards():
     assert state.parties["Player"].status == 2
     assert state.parties["Player"].members_last_turn == 0
     assert state.parties["Player"].member_history == [0, 2]
+
+
+def test_delayed_policy_ring_samples_after_one_ramp_turn():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn7_ordes.xml", data
+    )
+    state.political_capital = 100.0
+    original = next(
+        history.values[0]
+        for history in state.effect_histories
+        if (history.source, history.target) == ("StateHealthService", "Health")
+    )
+    state = simulator.apply_actions(
+        state,
+        [
+            PolicyAction(
+                policy_name="StateHealthService",
+                delta=-0.68,
+                action_type="lower",
+            )
+        ],
+        data=data,
+    )
+    first = simulator.process_end_of_turn(state, graph, data=data)
+    first_head = next(
+        history.values[0]
+        for history in first.effect_histories
+        if (history.source, history.target) == ("StateHealthService", "Health")
+    )
+    second = simulator.process_end_of_turn(first, graph, data=data)
+    second_head = next(
+        history.values[0]
+        for history in second.effect_histories
+        if (history.source, history.target) == ("StateHealthService", "Health")
+    )
+
+    assert first_head == pytest.approx(original)
+    assert second_head != pytest.approx(original)
+
+
+def test_year_neuron_is_monotonic_quarter_counter():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    first = simulator.process_end_of_turn(state, graph, data=data)
+    second = simulator.process_end_of_turn(first, graph, data=data)
+
+    assert first.values["_year"] == pytest.approx(0.0)
+    assert second.values["_year"] == pytest.approx(0.25)
+    assert second.hidden_histories["_year"][:2] == pytest.approx([0.25, 0.0])
 
 
 def test_passive_agent_step_runs_single_loop():

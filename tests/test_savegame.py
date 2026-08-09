@@ -34,6 +34,9 @@ def test_parse_savegame_extracts_core_sections():
     assert save.political_capital == pytest.approx(26.0)
     assert save.total_income > 0
     assert save.total_expenditure > 0
+    assert len(save.hidden_histories["_globaleconomy_"]) == 33
+    assert save.hidden_histories["_globaleconomy_"][0] == pytest.approx(0.270)
+    assert len(save.hidden_histories["_year"]) == 33
 
 
 @pytest.mark.skipif(not SAVE_PATH.exists(), reason="Savegame file missing")
@@ -76,6 +79,7 @@ def test_state_snapshot_round_trips_voter_runtime_fields():
     assert restored.parties["The National Front"].member_history == state.parties[
         "The National Front"
     ].member_history
+    assert restored.hidden_histories == state.hidden_histories
 
 
 def test_parse_savegame_keeps_policy_target_separate_from_current_value(tmp_path):

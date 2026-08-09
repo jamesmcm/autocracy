@@ -66,7 +66,7 @@ political capital, total income, total expenditure, and net balance. The
   policy/simvalue ring residuals therefore remain until that runtime state can
   be recovered.
 - State snapshots include situations, active situations, hidden global
-  neurons, voter histories, party metadata/history rings, full per-voter
+  neurons and their 33-slot histories, voter histories, party metadata/history rings, full per-voter
   party/sympathy inputs, policy runtime/multiplier fields, delayed policy
   throttles, ministerial effectiveness, political-capital points, policy
   finance history rings, and effect histories.
@@ -150,12 +150,13 @@ bootstrap a simulation from an in-game snapshot.
   `ViolentCrimeRate` value (which is inconsistent with the game's own inputs).
 - Finance is live-recomputed, including debt interest and the global-interest
   neuron; save parsing also preserves each policy's 20-entry cost/income
-  history ring. The drastic replay's aligned final residual is about -1,225
-  income / -33 expenditure.
+  history ring. The drastic replay's aligned final residual is about -1,245
+  income / +80 expenditure under the current pre-policy effect sampling.
 - The remaining continuous-state residuals are concentrated in outgoing
-  effect-ring throttle/load state; a broad pre-update sampling rule regresses
-  final expenditure, so the simulator keeps the targeted rule documented in
-  `SIMULATION.md`.
+  effect-ring throttle/load state and the non-serialized global-economy random
+  cursor. The current model retains the evidence-backed one-pass policy delay
+  and pre-policy source ordering documented in `SIMULATION.md`; the finance
+  trade-off is measured in `parity_cases/DRASH_NOTES.md`.
 - Base party/sympathy membership transitions now use the binary-confirmed
   approval transform, simconfig thresholds, party-type lookup, and serialized
   member-count history. Native manager-owned party lists, activist/poll
@@ -169,7 +170,7 @@ bootstrap a simulation from an in-game snapshot.
 - Reconstruct the remaining party/sympathy manager state (linked lists,
   activist/poll updates, percentages, and frequencies) from static binary
   analysis and captured saves.
-- Run `gamedrive/preflight.py` to verify the version-specific native symbols
+- Run `gamedrive/preflight.py` to verify the 23 version-specific native symbols
   before continuing gdb/LD_PRELOAD work.
 - Use the binary manager call order and save snapshots to continue the native
   gdb/LD_PRELOAD path; do not launch the installed game on this server.

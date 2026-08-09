@@ -223,6 +223,10 @@ class SimulationState:
     total_expenditure: float = 0.0
     total_income: float = 0.0
     global_economy_position: float = 0.0
+    # Histories for manager-owned hidden simulation neurons, keyed by their
+    # public simulator names (for example ``_globaleconomy_`` and ``_year``).
+    # The XML save stores these separately from ordinary simvalue histories.
+    hidden_histories: Dict[str, List[float]] = field(default_factory=dict)
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
@@ -240,6 +244,11 @@ class SimulationState:
     policy_income_scalars: Dict[str, float] = field(default_factory=dict)
     effect_throttles: Dict[str, float] = field(default_factory=dict)
     policy_desired_throttles: Dict[str, float] = field(default_factory=dict)
+    # A slider move delays the first policy-owned inertial-ring sample by one
+    # simulation pass.  The native effect manager then samples the ramping
+    # policy value on subsequent passes, even when a long implementation time
+    # means the target has not been reached yet.
+    policy_effect_history_delays: Dict[str, int] = field(default_factory=dict)
     ministerial_effectiveness: Dict[str, float] = field(default_factory=dict)
     ministerial_competence: Dict[str, float] = field(default_factory=dict)
     political_capital_income: float = 0.0

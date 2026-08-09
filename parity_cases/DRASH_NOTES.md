@@ -304,8 +304,9 @@ the global-interest neuron offset (`_global_interest_rates_ - 0.5`) to the
 credit-rating factor before interpolating `INTEREST_RATE_MIN/MAX`; the Python
 rate helper now models that input.  The final capture is serialized as game
 turn 12 in `turn11_initial.xml`, and the replay harness now aligns by the XML
-turn field.  Its final comparison is income -1,225.3 and expenditure -32.5;
-the remaining material state residual is the captured late-turn
+turn field.  With the current ring ordering its final comparison is income
+-1,244.6 and expenditure +80.1; the earlier pre-policy sampling baseline was
+about -1,225 and -32.5.  The remaining material state residual is the captured late-turn
 `ViolentCrimeRate` anomaly, followed by targeted inertial-ring and voter-party
 model gaps listed below.
 
@@ -330,12 +331,36 @@ recalculates live effects from the state it has. This is why the captured
 `StateHealthService -> Health` and `PrivateSchools -> Education` rings do not
 always equal the direct expression evaluated from the saved policy/simvalue.
 
-A broad proxy that sampled every moving policy before its update was tested and
-rejected: it improved some captured ring heads but moved the aligned final
-expenditure error from about `-32.5` to about `+80`. The targeted
-policy-boundary rule is therefore retained until effect-level throttle state
-can be recovered or a native game capture is available. No unsafe global ring
-rule was added.
+A broad pre-policy source rule is now retained because the native ordering and
+the captured `StateHealthService -> Health` ring support sampling the current
+policy value before `Policy::NextTurn`. A one-pass per-policy delay preserves
+the old ring head immediately after a slider order. This improves the targeted
+ring heads, but moves the aligned final expenditure error from the earlier
+`-32.5` baseline to about `+80`; the trade-off is documented rather than hidden
+behind a named-policy exception. Effect-level desired throttles are not
+serialized, so no stronger global ring rule is justified from the captures.
+
+### Hidden manager histories and native follow-up (current)
+
+The save bridge now retains the eight fixed hidden simulation neurons and their
+33-slot newest-first histories (`n_0`, `n_1`, `n_2`, `n_3`, `n_5`, `n_6`, `n_7`,
+and `n_8`, including `_globaleconomy_` and `_year`). `SimulationState` carries
+those histories through JSON snapshots and advances them on each simulated
+turn. This closes a state-loss bug in the extraction/continuation path; it does
+not make the global cycle deterministic. Static disassembly of
+`SIM_GlobalEconomy::Calculate()` (0x5d14e0) shows a `RandReal(0.9, 1.1)` factor,
+while the random cursor is not serialized and the captured histories do not
+identify a recoverable contiguous seed-1 stream. The simulator therefore keeps
+the deterministic sine term and records the native limitation instead of
+hard-coding a guessed multiplier sequence.
+
+The same audit pinned `SIM_Voter::UpdateIncome()` (0x61e620) and
+`SIM_VoterType::ForceVoter(SIM_Voter*, float)` (0x623350). Native income-group
+membership is rebuilt from runtime per-voter income fields and uses sinusoidal
+windows; the current model uses serialized `inincome` band assignment and does
+not yet apply every dynamic `*_income` effect. The native entries are now part
+of the 23-symbol static preflight, which remains safe and does not launch the
+installed game.
 
 ### Calibration is data-driven (commit 33222ed)
 

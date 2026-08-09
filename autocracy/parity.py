@@ -62,6 +62,10 @@ def snapshot_from_savegame(save: SaveGame) -> Dict[str, object]:
             "intensity": save.global_economy_intensity,
         },
         "hidden_values": _sorted_values(save.hidden_values),
+        "hidden_histories": {
+            name: list(save.hidden_histories[name])
+            for name in sorted(save.hidden_histories)
+        },
         "inherited": _sorted_values(save.inherited_values),
         "voters": {
             "values": _sorted_values(save.voter_values),

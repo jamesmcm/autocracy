@@ -40,6 +40,7 @@ class SaveGame:
     global_economy_years: float
     global_economy_intensity: float
     hidden_values: Dict[str, float]
+    hidden_histories: Dict[str, List[float]] = field(default_factory=dict)
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
@@ -353,6 +354,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         global_economy_years = _first_history_value(global_economy_elem.findtext("years"))
         global_economy_intensity = _first_history_value(global_economy_elem.findtext("intens"))
     hidden_values: Dict[str, float] = {}
+    hidden_histories: Dict[str, List[float]] = {}
     simulation_elem = root.find("simulation")
     if simulation_elem is not None:
         # These are the fixed global neurons created by the game before it
@@ -375,6 +377,9 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 hidden_values[name] = float(raw_value)
             except ValueError:
                 continue
+            hidden_histories[name] = _history_values(
+                simulation_elem.findtext(f"{slot}_hist")
+            )
     voter_values: Dict[str, float] = {}
     voter_percentages: Dict[str, float] = {}
     voter_frequencies: Dict[str, float] = {}
@@ -555,6 +560,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         global_economy_years=global_economy_years,
         global_economy_intensity=global_economy_intensity,
         hidden_values=hidden_values,
+        hidden_histories=hidden_histories,
         voter_values=voter_values,
         voter_percentages=voter_percentages,
         voter_frequencies=voter_frequencies,
@@ -605,6 +611,9 @@ def state_from_savegame(
     state.policy_desired_throttles = save.policy_desired_throttles.copy()
     for name, value in save.hidden_values.items():
         state.values[name] = value
+    state.hidden_histories = {
+        name: list(values) for name, values in save.hidden_histories.items()
+    }
     for name, value in save.voter_values.items():
         state.voter_values[name] = value
         state.values[name] = value
