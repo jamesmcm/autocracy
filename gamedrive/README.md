@@ -330,6 +330,33 @@ at about 1,084 income and 2,053 expenditure around the policy/ring transition.
 Those remaining gaps are tracked as effect-ring and native manager boundaries,
 not hidden calibration of a single final checkpoint.
 
+### 128-turn no-order stress capture
+
+To extend the audit across eight UK electoral terms, the launcher produced a
+128-turn no-order chain from the unchanged `turn0_initial.xml` source:
+
+```bash
+PYTHONPATH=. uv run python gamedrive/term_capture.py \
+  --country uk --load-name turn0_initial \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --turns 128 --one-process-per-turn \
+  --capture-prefix autocracy_uk_128turn_noorders_20260810 --timeout 90
+
+PYTHONPATH=. uv run python gamedrive/term_audit.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix autocracy_uk_128turn_noorders_20260810 --turns 128 \
+  --minister-resignations
+```
+
+All 128 terminal saves and 128 intermediate load saves passed native
+validation, and policy targets remained exact at every checkpoint. Across the
+long horizon, the documented deterministic-resignation replay reached maximum
+absolute residuals of about 1,737 income, 299,074 expenditure, 0.600 ordinary
+node value, 0.603 situation value, and 0.891 voter value. The growing finance
+and manager/effect-ring drift is now a long-horizon parity target rather than
+an unmeasured end-of-term failure.
+
 ### Fresh intervention rollout
 
 To exercise the complete path again, a fresh native rollout was generated with

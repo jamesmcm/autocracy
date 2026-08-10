@@ -129,6 +129,11 @@ is kept outside the repository under the installed save root; the reproducible
 names are recorded in [`gamedrive/MULTI_TERM_TODO.md`](gamedrive/MULTI_TERM_TODO.md).
 Every checkpoint passed native-save validation and serialized turns 1–24.
 
+The same unchanged source also has a 128-turn no-order stress chain recorded
+in `gamedrive/MULTI_TERM_TODO.md`; all 128 terminal and intermediate saves
+passed validation, with zero policy-target differences. Its late-horizon
+finance and manager/effect-ring drift is recorded as the next parity target.
+
 `gamedrive/term_audit.py` compares the complete offline state at every
 checkpoint. Policy targets are exact across both chains. The long run exposed
 the native missing-minister finance fallback (competence `0.25`) and a

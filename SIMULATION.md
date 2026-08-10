@@ -262,6 +262,15 @@ counts, income-host links, and some poll modifiers are manager-owned pointers
 rebuilt in process, so the audit reports them as runtime boundaries rather than
 pretending they are serialized simulator inputs.
 
+The same launcher also supports a 128-turn no-order stress chain. The
+2026-08-10 run produced 128 validated terminal saves plus 128 intermediate load
+saves from `turn0_initial.xml`, with zero policy-target differences. Using
+`--minister-resignations`, the 128-checkpoint audit reached maximum absolute
+residuals of about 1,737 income, 299,074 expenditure, 0.600 ordinary-node
+value, 0.603 situation value, and 0.891 voter value. These late-horizon
+finance and manager/effect-ring differences remain an explicit parity target;
+the shorter 24-turn acceptance results are not extrapolated to 128 turns.
+
 ---
 
 ### Actions API

@@ -71,3 +71,22 @@ offline audit keeps policy targets exact and reduces the order-chain finance
 residual to at most about 1,084 income and 2,053 expenditure across the 24
 turns. Remaining continuous-state gaps are concentrated in native
 effect-ring/load state and manager-owned voter and party data.
+
+## 128-turn no-order stress record
+
+- [x] Generate a native 128-turn UK no-order chain from the unchanged
+      `turn0_initial.xml` source.
+- [x] Validate all terminal and intermediate native saves and confirm
+      monotonic serialized turns.
+- [x] Audit every checkpoint with the offline simulator using the documented
+      deterministic minister-resignation mode.
+- [x] Record the long-horizon residual envelope as the next parity target.
+
+The raw chain is stored outside the repository as
+`autocracy_uk_128turn_noorders_20260810_step{1..128}_turn1.xml`. All 128
+terminal saves and 128 intermediate load saves passed native validation, with
+zero policy-target differences. Over the 128 checkpoints, the audit measured
+maximum absolute residuals of about 1,737 income, 299,074 expenditure, 0.600
+ordinary-node value, 0.603 situation value, and 0.891 voter value. The large
+late finance residual is a real long-horizon divergence to investigate; it is
+not folded into the earlier 24-turn acceptance envelope.
