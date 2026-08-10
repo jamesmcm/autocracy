@@ -33,7 +33,10 @@ constexpr std::uintptr_t kGameplayNextTurn = 0x5D0F80;
 constexpr std::uintptr_t kNextTurnThread = 0x5CFF30;
 constexpr std::uintptr_t kGetNeuronByName = 0x60C140;
 constexpr std::size_t kNeuronValueOffset = 0x38;
-constexpr std::uintptr_t kLoadingCompleteFlag = 0xA15C50;
+// GUI_LoadingScreen clears offset 0x10 when the worker ends and sets offset
+// 0x11 as the persistent ready marker.  The former is only a transient race
+// window; the latter is safe for the main-loop probe to observe.
+constexpr std::uintptr_t kLoadingCompleteFlag = 0xA15C51;
 
 constexpr std::uintptr_t kPoliticalCapitalGuard = 0xA3A0E8;
 constexpr std::uintptr_t kPoliticalCapitalObject = 0xA3A0F8;
