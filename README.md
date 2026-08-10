@@ -198,15 +198,16 @@ bootstrap a simulation from an in-game snapshot.
 
 - Reduce targeted Education/Health/WorkerProductivity ring drift; OilSupply is
   exact in the current aligned replay.
-- Reconstruct the remaining party/sympathy manager state (linked lists and
-  activist/poll updates) plus the non-serialized per-voter income-neuron host
-  links from static binary analysis and captured saves.
-- Run `gamedrive/preflight.py` to verify the 59 version-specific native symbols
+- Continue simulator-side party/sympathy parity work; the native probe now has
+  an opt-in manager census for live party, activist, poll, and income-host
+  state.
+- Run `gamedrive/preflight.py` to verify the 75 version-specific native symbols
   before using the version-pinned injector.
-- Use `gamedrive/inject_drive.py --sync-gameplay-turn` under Xvfb to load a
-  copied save, run the native `NextTurnThread`, and save direct ground truth.
-  See [`gamedrive/README.md`](gamedrive/README.md) for the memory-editing
-  boundary and measured all-node comparison.
+- Use `gamedrive/inject_drive.py --turn-mode sync` under Xvfb to load a copied
+  save, replay pre-turn `_orders` files, and save a bounded native capture.
+  Compare it offline with `gamedrive/capture.py`; see
+  [`gamedrive/README.md`](gamedrive/README.md) for fresh-output validation,
+  manager census, and the memory-editing boundary.
 - Keep raw native output saves outside the repository and use fresh save names;
   the installed binary is version-pinned to Democracy 3 v1.30.2.
 - Keep raw proprietary saves outside the repository; commit only reviewable

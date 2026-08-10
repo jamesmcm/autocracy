@@ -10,15 +10,25 @@
       persisted GDP edit without changing the source capture.
 - [x] Compare the direct native no-order turn against the simulator across
       ordinary nodes, situations, voters, policies, and finance fields.
-- [ ] Drive native slider/order entrypoints so a captured `_orders` save can be
+- [x] Drive native slider/order entrypoints so a captured `_orders` save can be
       replayed without treating it as a completed-turn input.
-- [ ] Explain and fix the loader stall when reloading probe-produced or edited
+- [x] Explain and fix the loader stall when reloading probe-produced or edited
       native output XML.
-- [ ] Resolve or replace the ptrace-sensitive asynchronous
+- [x] Resolve or replace the ptrace-sensitive asynchronous
       `SIM_Gameplay::NextTurn()` launcher path.
-- [ ] Recover manager-owned party membership, activist/poll, and per-voter
+- [x] Recover manager-owned party membership, activist/poll, and per-voter
       income host links from the live process.
-- [ ] Build a bounded multi-turn native capture and compare it with the
+- [x] Build a bounded multi-turn native capture and compare it with the
       simulator's full 12-turn action replay.
-- [ ] Add a lightweight opt-in integration smoke test that skips cleanly when
+- [x] Add a lightweight opt-in integration smoke test that skips cleanly when
       the installed game binary is unavailable.
+
+The completed harness is deliberately split into safe, reproducible pieces:
+`order_plan.py` translates pre-turn `_orders` saves, `native_probe.cpp` applies
+the native policy methods and bounded `NextTurnThread` loop, and `capture.py`
+performs the offline 12-turn comparison. Fresh-output and XML-boundary checks
+in `inject_drive.py` prevent stale or truncated files from being mistaken for
+successful reloads. Manager refresh/census is opt-in because it mutates live
+manager lists before the audit save. The native integration test is also
+opt-in; normal CI skips it when the installed game and display tooling are not
+available.

@@ -9,3 +9,8 @@ dependencies = [
     "typer>=0.20.0",
     "pytest>=8.3.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: opt-in native Democracy 3 process smoke test",
+]

@@ -2,11 +2,8 @@
 
 This launches the installed game under a virtual X server and gdb, stops it at
 ``mainLoop()`` (before the graphics resize crash), and reports what of the
-simulation is reachable from outside the process.
-
-The full round-trip (load a country -> SIM_Simulation::NextTurn -> serialize
-through the game's own save functions) is blocked on the load-flow details;
-see README.md for the entry points and the remaining reverse-engineering.
+simulation is reachable from outside the process. It remains a reachability
+diagnostic; use ``inject_drive.py`` for the bounded load/order/turn/save path.
 """
 
 from __future__ import annotations

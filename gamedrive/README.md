@@ -14,6 +14,14 @@ reachable:
 | `SIM_Simulation::NextTurn()` | 0x60e120 | the complete turn step |
 | `SIM_Gameplay::NextTurn()` | 0x5d0f80 | GUI-facing asynchronous turn launcher |
 | `NextTurnThread(void*)` | 0x5cff30 | native full turn worker entrypoint |
+| `SIM_PolicyManager::GetPolicy(std::string)` | 0x5fa090 | resolve a live policy |
+| `SIM_Policy::SetSlider(float)` | 0x5f5b70 | apply a native order target |
+| `SIM_Policy::Implement()` / `Cancel()` | 0x5f68f0 / 0x5f66f0 | native policy state changes |
+| `SIM_PoliticalCapital::SpendPoints(int)` | 0x5fadc0 | charge native order cost |
+| `SIM_VoterManager::PreJoinParties()` | 0x6208e0 | rebuild live voter-party links |
+| `SIM_VoterManager::PreCalculateIncome()` | 0x620920 | rebuild live income hosts |
+| `SIM_PartyManager::CalculateActivists()` | 0x5f49a0 | refresh party activist counts |
+| `SIM_PollsManager::CalculateVoteRate()` | 0x5fb450 | refresh the live poll rate |
 | `SIM_Simulation::GetNeuronByName(std::string)` | 0x60c140 | read any neuron |
 | `SIM_Simulation::Initialise()` | 0x60f560 | initialise a country |
 | `SIM_GlobalEconomy::BackProjectHistory()` | 0x5d1370 | rebuild hidden global history |
@@ -67,7 +75,7 @@ then it calls `SIM_Simulation::ApplyMissionSpecificData(false)`, initializes
 `ProcessGameLoad()`/`NextTurn()`; it is not safe to jump directly to
 `OpenSavedFile()` from the GUI breakpoint.
 
-The voter/party entry points are pinned for follow-up native manager work:
+The voter/party entry points are pinned for the opt-in native manager audit:
 `SIM_Voter::CalculateApproval()` (0x61b880),
 `SIM_Voter::ConsiderPartyMembership(int)` (0x61d000),
 `SIM_Voter::UpdateIncome()` (0x61e620),
@@ -119,7 +127,10 @@ not the manager's live party/group lists; the Python save bridge now preserves
 the serialized inputs instead of silently discarding them. It also retains the
 top-level party definitions and their member/activist history rings; those
 history values are serialized, while the live member lists remain native
-manager state.
+manager state. The injector can now run the native refresh methods in-process,
+write a manager census (party member/activist fields, poll rate, party links,
+and per-voter income-host link counts), and optionally save the refreshed
+native XML under a separate name.
 `SIM_Voter::UpdateIncome()` additionally rebuilds the runtime income-group
 links from the per-voter income fields. The simulator now preserves each
 serialized nested VoterType `<income>` value and evaluates its direct graph
@@ -141,10 +152,13 @@ the live lists or approval modifiers can be reconstructed from XML.
 1. Start one native asynchronous load from the first `mainLoop()` stop.
 2. Wait for the game's loading-complete flag before calling into live objects.
 3. Save the loaded native state through `SIM_SaveGame`.
-4. Optionally write a named neuron's live float slot (`SIM_Neuron + 0x38`) and
-   save that edited state under a separate name.
-5. Run the game's `NextTurnThread` entrypoint synchronously and save the
-   resulting native turn, or use the experimental asynchronous launcher.
+4. Translate each pre-turn `_orders` save into native `Implement`, `Cancel`,
+   `SetSlider`, and political-capital calls; an omitted orders file is a
+   deliberate no-op turn.
+5. Run one or a bounded number of native `NextTurnThread` workers
+   synchronously and save every completed turn under fresh names.
+6. Optionally refresh the native voter/party/poll managers, write their live
+   census, or edit a named neuron's float slot (`SIM_Neuron + 0x38`).
 
 The staged breakpoint only stops `mainLoop()` at load/turn boundaries. The
 expensive native worker runs without a breakpoint on every GUI frame.
@@ -159,22 +173,50 @@ PYTHONPATH=. python gamedrive/gdb_drive.py --verbose
 make -C gamedrive
 PYTHONPATH=. uv run python gamedrive/preflight.py
 
-# Load d3_probe_turn0.xml, run the full native worker, and save its output
+# Load a copied source, run one synchronous native worker, and save fresh output
 PYTHONPATH=. uv run python gamedrive/inject_drive.py \
-  --sync-gameplay-turn --timeout 120
+  --load-name d3_probe_turn0_copy \
+  --turn-mode sync --timeout 120
+
+# Replay the captured pre-turn orders through twelve native turns
+PYTHONPATH=. uv run python gamedrive/inject_drive.py \
+  --load-name d3_probe_turn0_copy \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --orders-dir parity_cases/dem3saves \
+  --capture-prefix d3_probe_replay_run42 \
+  --timeout 120
+
+# Compare those native captures with the same twelve-turn simulator replay
+PYTHONPATH=. uv run python gamedrive/capture.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --orders-dir parity_cases/dem3saves \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix d3_probe_replay_run42 --turns 12
 
 # Load only, then edit one live neuron and persist a separate native save
 PYTHONPATH=. uv run python gamedrive/inject_drive.py --skip-turn \
+  --load-name d3_probe_turn0_copy \
   --edit-node GDP --edit-value 0.123
+
+# Opt-in manager census and refreshed XML (all names/paths must be fresh)
+PYTHONPATH=. uv run python gamedrive/inject_drive.py --skip-turn \
+  --load-name d3_probe_turn0_copy --manager-audit \
+  --manager-save-name d3_probe_managers_run42
 ```
 
 The wrapper reads and writes the installed user's save directory:
 `/home/gopostal/.local/share/democracy3/savegames`. Copy a source capture there
-under a new name first; do not use an existing save name. The wrapper checks
-that required output files exist and returns nonzero on a timeout or missing
-output. The game process is terminated by gdb, and the source capture is not
-modified. Memory edits are intentionally limited to `--skip-turn`; to run a
-turn from an edited state, use the resulting XML as the input to a fresh probe.
+under a new name first; do not use an existing save name. It refuses stale
+outputs by default, checks that each native XML has the v1.30.2 sections and a
+single final `</xml>`, and returns nonzero on a timeout or incomplete output.
+The game process is terminated by gdb, and the source capture is not modified.
+The `capture.py` comparison is offline and never launches the game.
+
+`--turn-mode sync` is the reliable default. `--turn-mode async` (or the legacy
+`--gameplay-turn`) remains available for experiments, but the GUI launcher is
+ptrace-sensitive. `--turn-mode direct` calls the simulation entrypoint without
+the gameplay wrapper and is intended only for the single-turn no-order oracle.
+Memory edits are intentionally limited to `--skip-turn`.
 
 ## Ground-truth results
 
@@ -197,15 +239,11 @@ simulator processing the same no-order input:
 | voter frequencies/incomes | frequencies differ below 1e-6; incomes exact |
 
 This is a same-input comparison. `turn1_initial.xml` follows the captured
-`turn0_orders.xml`, so it must not be compared with a native run loaded from
-`turn0_initial.xml` without applying those orders. Loading the captured
-`turn0_orders.xml` directly through this headless path currently exceeds the
-bounded loader timeout; the next step is to drive the native order/slider
-entrypoints rather than treat an orders save as a completed-turn input.
-Probe-produced output XML is still a valuable ground-truth artifact for the
-parser, but reloading an edited/probe-produced save through this loader path
-also currently exceeds the bounded timeout. Treat each probe run as a fresh
-source-capture-to-output operation until that save round-trip is repaired.
+`turn0_orders.xml`; the bounded driver now applies that order save in the live
+process rather than treating it as a completed-turn input. Missing order files
+are replayed as no-op turns, so the supplied fixtures produce exactly twelve
+native output names. `capture.py` aligns each native `<turn>` field with the
+simulator snapshot and reports finance, ordinary-node, and policy residuals.
 
 ## Current limitations and safety boundaries
 
@@ -215,10 +253,25 @@ The load flow is driven by the game's own asynchronous path
 `OpenSavedFile()`/`LoadGameData()` from a breakpoint still hang; the probe uses
 the native `LoadGame()` launcher and waits on the completion flag instead.
 
-The `--gameplay-turn` mode is retained as an experiment, but the game's
-`SIM_Gameplay::NextTurn()` thread orchestration can stall under ptrace. Use
-`--sync-gameplay-turn`: it invokes the same `NextTurnThread(void*)` worker and
-manager order synchronously, producing the reliable ground-truth boundary.
+The game's `SIM_Gameplay::NextTurn()` thread orchestration can stall under
+ptrace. The default `--turn-mode sync` replaces that launcher with the same
+native `NextTurnThread(void*)` worker and manager order synchronously. The
+asynchronous launcher is retained only as an explicit experiment.
+
+The earlier loader “stall” was not repaired by rewriting XML. Static checks
+showed that native `SIM_SaveGame::SaveGame` writes a complete file, while
+direct `OpenSavedFile`/`LoadGameData` calls bypass the loader thread boundary.
+The harness fix is to use the native asynchronous loader in a fresh process,
+validate every output boundary, and never reload a probe output in-place. This
+also prevents a stale or partially written file from being misdiagnosed as a
+successful round trip. A native integration run remains opt-in on this host.
+
+`--manager-audit` invokes `PreCalculateIncome`, `PreJoinParties`,
+`CalculateActivists`, and `CalculateVoteRate` after load. The text audit records
+party live-list membership/activist fields, poll rate, each voter's party link,
+and income-host link count; `--manager-save-name` preserves the refreshed XML.
+This is a live-process census, not an assertion that those pointers are
+serialized into the simulator state.
 
 The probe is tightly version-pinned:
 
@@ -235,6 +288,12 @@ after an explicit gdb breakpoint, and memory edits are opt-in. Since gdb kills
 the inferior after each bounded run, an edit is process-local; nevertheless,
 always write new save names and retain the original source capture.
 
-A future order-driving harness still needs the native slider/order entrypoints
-and the manager-owned party/income links. Those are the remaining pieces for
-an apples-to-apples replay of the captured 12-turn action sequence.
+The injector is pinned to the installed v1.30.2 ELF. Run the static preflight
+after any binary update, keep raw/proprietary saves outside this repository,
+and use the opt-in smoke test when a disposable installed save is available:
+
+```
+AUTOCRACY_RUN_NATIVE_INTEGRATION=1 \
+AUTOCRACY_NATIVE_SOURCE_NAME=d3_probe_turn0_copy \
+uv run pytest -q -m integration tests/test_gamedrive_integration.py
+```
