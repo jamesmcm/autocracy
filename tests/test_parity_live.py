@@ -254,6 +254,21 @@ def test_minister_loyalty_disabled_keeps_loaded_income():
 
 
 @pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
+def test_long_term_minister_resignation_uses_native_vacancy_fallback():
+    """The opt-in resignation path matches the captured quiet UK term."""
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(SAVES_DIR / "turn0_initial.xml", data)
+    cfg = SimulationConfig(minister_loyalty=True, minister_resignations=True)
+    for _ in range(15):
+        state = simulator.process_end_of_turn(state, graph, data, config=cfg)
+
+    assert "TAX" not in state.ministerial_loyalty
+    assert state.policy_income_scalars["IncomeTax"] == pytest.approx(0.9375)
+    assert state.policy_cost_scalars["IncomeTax"] == pytest.approx(1.0625)
+    assert state.political_capital == pytest.approx(34.0)
+
+
+@pytest.mark.skipif(not (SAVES_DIR / "turn0_initial.xml").exists(), reason="saves missing")
 def test_end_to_end_replay_turn_one_and_two():
     for target_turn in (1, 2):
         state, data = _replay_state_after(target_turn)

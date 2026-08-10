@@ -2164,17 +2164,57 @@ def _advance_minister_loyalty(
     return values, loyalties
 
 
+def _remove_resigned_ministers(
+    experience: Dict[str, float],
+    competence: Dict[str, float],
+    effectiveness: Dict[str, float],
+    suitability: Dict[str, float],
+    loyalty: Dict[str, float],
+    volatility: Dict[str, float],
+    values: Dict[str, float],
+    sympathies: Dict[str, List[str]],
+    data: SimulationData,
+) -> set[str]:
+    """Drop portfolios whose loyalty crossed the native resignation cutoff.
+
+    The native manager removes a minister after the loyalty update, before
+    the political-capital cap and finance scalars are serialized.  The random
+    resignation chance is not stored in XML, so the explicit resignation mode
+    treats a minister below the configured threshold as resigned.  This
+    reproduces the turn-15 TAX vacancy in the quiet UK native capture while
+    leaving ordinary loyalty-only replays roster-stable.
+    """
+    threshold = data.sim_config.get("MINISTER_RESIGN_THRESHHOLD", 0.15)
+    resigned = {dept for dept, value in loyalty.items() if value < threshold}
+    for department in resigned:
+        experience.pop(department, None)
+        competence.pop(department, None)
+        effectiveness.pop(department, None)
+        suitability.pop(department, None)
+        loyalty.pop(department, None)
+        volatility.pop(department, None)
+        values.pop(department, None)
+        sympathies.pop(department, None)
+    return resigned
+
+
+def _minister_fallback_competence(data: SimulationData) -> float:
+    """Return the competence used by native finance without a minister."""
+    return float(
+        data.calibration.get("minister_fallback", {}).get("competence", 0.25)
+    )
+
+
 def _capital_income(
     state: SimulationState, data: SimulationData
 ) -> float:
     """Per-turn political-capital income from the active ministers.
 
     Mirrors ``SIM_PoliticalCapital::CalcNewPoints``: every minister with a
-    portfolio contributes ``max(1, POLITICAL_CAPITAL_PER_MINISTER *
-    (loyalty - threshold))``.  Empirically the serialized incomes match a
-    threshold one MINISTER_VOTER_BOOST below the config's
-    MINISTER_RESIGN_THRESHHOLD (0.10 vs 0.15); the total is truncated like
-    the game's ``cvttss2si``.
+    portfolio contributes ``max(0, POLITICAL_CAPITAL_PER_MINISTER *
+    (loyalty - threshold))``.  The threshold is one MINISTER_VOTER_BOOST
+    below the config's MINISTER_RESIGN_THRESHHOLD (0.10 vs 0.15); the total
+    is truncated like the game's ``cvttss2si``.
     """
     per_minister = data.sim_config.get("POLITICAL_CAPITAL_PER_MINISTER", 6.0)
     threshold = data.sim_config.get("MINISTER_RESIGN_THRESHHOLD", 0.15) - data.sim_config.get(
@@ -2182,7 +2222,7 @@ def _capital_income(
     )
     total = 0.0
     for loyalty in state.ministerial_loyalty.values():
-        total += max(1.0, per_minister * (loyalty - threshold))
+        total += max(0.0, per_minister * (loyalty - threshold))
     return float(int(total))
 
 
@@ -2465,10 +2505,19 @@ def _recompute_live_finance(
     if multiplier_context is None:
         multiplier_context = context
 
+    fallback_competence = _minister_fallback_competence(data)
+    fallback_income_scalar = _f32(0.875 + 0.25 * fallback_competence)
     income_scalars = {
-        dept: _f32(0.875 + 0.25 * competence)
-        for dept, competence in state.ministerial_competence.items()
+        policy.department: fallback_income_scalar
+        for policy in data.policies.values()
+        if policy.department
     }
+    income_scalars.update(
+        {
+            dept: _f32(0.875 + 0.25 * competence)
+            for dept, competence in state.ministerial_competence.items()
+        }
+    )
     cost_scalars = {
         dept: _f32(2.0 - scalar) for dept, scalar in income_scalars.items()
     }
@@ -2597,6 +2646,12 @@ def process_end_of_turn(
     # loyalty advance, which drives the per-turn political-capital income.
     ministerial_value = runtime_state.ministerial_value.copy()
     ministerial_loyalty = runtime_state.ministerial_loyalty.copy()
+    ministerial_suitability = runtime_state.ministerial_suitability.copy()
+    ministerial_volatility = runtime_state.ministerial_volatility.copy()
+    ministerial_sympathies = {
+        name: list(groups)
+        for name, groups in runtime_state.ministerial_sympathies.items()
+    }
     if config is not None and config.minister_loyalty:
         # Loyalty thresholds see the newly advanced policy state, but the
         # experience increment itself is applied only once above.
@@ -2607,6 +2662,29 @@ def process_end_of_turn(
         ministerial_value, ministerial_loyalty = _advance_minister_loyalty(
             loyalty_state, data
         )
+        resigned: set[str] = set()
+        if config.minister_resignations:
+            resigned = _remove_resigned_ministers(
+                experience,
+                competence,
+                effectiveness,
+                ministerial_suitability,
+                ministerial_loyalty,
+                ministerial_volatility,
+                ministerial_value,
+                ministerial_sympathies,
+                data,
+            )
+            if resigned:
+                loyalty_change = data.sim_config.get(
+                    "MINISTER_RESIGNS_LOYALTY_CHANGE", -0.06
+                )
+                for department in ministerial_loyalty:
+                    ministerial_loyalty[department] = _clamp(
+                        ministerial_loyalty[department] + loyalty_change,
+                        0.0,
+                        1.0,
+                    )
     capital_per_minister = data.sim_config.get("POLITICAL_CAPITAL_PER_MINISTER", 6.0)
     max_multiplier = data.sim_config.get("POLITICAL_CAPITAL_MAX_MULTIPLIER", 2.0)
     if config is not None and config.minister_loyalty:
@@ -2630,7 +2708,11 @@ def process_end_of_turn(
         policies=runtime_state.policies.copy(),
         political_capital=new_capital,
         effects=new_effects,
-        political_capital_income=runtime_state.political_capital_income,
+        political_capital_income=(
+            capital_income
+            if config is not None and config.minister_loyalty
+            else runtime_state.political_capital_income
+        ),
         effect_histories=effect_histories,
         situations=situation_values,
         active_situations=active_situations,
@@ -2671,14 +2753,11 @@ def process_end_of_turn(
         ministerial_effectiveness=effectiveness,
         ministerial_competence=competence,
         ministerial_experience=experience,
-        ministerial_suitability=runtime_state.ministerial_suitability.copy(),
+        ministerial_suitability=ministerial_suitability,
         ministerial_loyalty=ministerial_loyalty,
-        ministerial_volatility=runtime_state.ministerial_volatility.copy(),
+        ministerial_volatility=ministerial_volatility,
         ministerial_value=ministerial_value,
-        ministerial_sympathies={
-            k: list(v)
-            for k, v in runtime_state.ministerial_sympathies.items()
-        },
+        ministerial_sympathies=ministerial_sympathies,
         debt=debt,
         credit_rating=credit_rating,
         turns_since_credit=turns_since_credit,

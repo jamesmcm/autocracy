@@ -7,6 +7,9 @@
   "effect_applicability": {
     "CitizenshipTests -> Immigration": "always"
   },
+  "minister_fallback": {
+    "competence": 0.25
+  },
   "frozen_rings": {
     "StateSchools -> Education": true
   },

@@ -27,6 +27,10 @@ class SimulationConfig:
     # policies, which feeds the per-turn political-capital income.  Disabling
     # it keeps the capital income at the value loaded from the save.
     minister_loyalty: bool = False
+    # Native resignation is probabilistic and the RNG cursor is not serialized
+    # in saves.  Keep it opt-in so a deterministic replay can model loyalty
+    # without silently choosing a different minister roster.
+    minister_resignations: bool = False
 
 
 @dataclass(slots=True)
