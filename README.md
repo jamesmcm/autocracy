@@ -90,7 +90,9 @@ political capital, total income, total expenditure, and net balance. The
   target by a fixed `1 / implementation_time` step per turn.
 - Political capital is seeded from the save and accrues using the captured
   active-minister baseline; for the shipped UK start this is 26 points per
-  turn with a 52-point cap.
+  turn with a 52-point cap. Loyalty-aware runs derive each minister's
+  contribution from loyalty with a zero floor; deterministic resignation is
+  opt-in because the native resignation roll is not serialized.
 
 ### Parity extraction
 
@@ -117,6 +119,24 @@ unstored random-system state cannot be reproduced. The ring-update rule
 (simvalue/situation rings advance each turn; policy rings wait at target
 changes and then drain with post-update samples) and that calibration are
 described in `SIMULATION.md`.
+
+### Long-run native corpus
+
+The `gamedrive` bridge has now generated two fresh 24-turn UK chains from the
+unchanged `parity_cases/dem3saves/turn0_initial.xml` source: a no-order chain
+and the captured policy sequence followed by a no-order tail. Raw native XML
+is kept outside the repository under the installed save root; the reproducible
+names are recorded in [`gamedrive/MULTI_TERM_TODO.md`](gamedrive/MULTI_TERM_TODO.md).
+Every checkpoint passed native-save validation and serialized turns 1–24.
+
+`gamedrive/term_audit.py` compares the complete offline state at every
+checkpoint. Policy targets are exact across both chains. The long run exposed
+the native missing-minister finance fallback (competence `0.25`) and a
+zero-floor political-capital contribution; both are now covered by the
+simulator, while deterministic minister resignations remain opt-in because the
+native resignation roll is not serialized. Remaining residuals are chiefly
+effect-ring state, the global-economy random cursor, and live party/poll
+manager lists that the game rebuilds in memory rather than saving.
 
 ### Stochastic systems
 
@@ -172,7 +192,11 @@ bootstrap a simulation from an in-game snapshot.
 - Finance is live-recomputed, including debt interest and the global-interest
   neuron; save parsing also preserves each policy's 20-entry cost/income
   history ring. The drastic replay's aligned final residual is about -1,490
-  income / +88 expenditure under the current pre-policy effect sampling.
+  income / +88 expenditure under the current pre-policy effect sampling. The
+  24-turn audit now also models the native no-minister competence fallback
+  (`0.25`) and reports peak absolute residuals of about 1,737 income / 1,839
+  expenditure for the quiet chain and 4,341 income / 27,819 expenditure for
+  the policy chain, with the latter concentrated around policy ring changes.
 - The remaining continuous-state residuals are concentrated in outgoing
   effect-ring throttle/load state (including the post-order StateHealth ramp)
   and the non-serialized global-economy random cursor. The current model
@@ -208,9 +232,12 @@ bootstrap a simulation from an in-game snapshot.
   Compare it offline with `gamedrive/capture.py`; see
   [`gamedrive/README.md`](gamedrive/README.md) for fresh-output validation,
   manager census, and the memory-editing boundary.
-- Use `gamedrive/term_capture.py --country uk` for the configured 16-turn UK
-  term plus eight extra turns; its `--orders-dir` mode appends a no-order tail
-  to an existing action sequence for long-run parity analysis.
+- Use `gamedrive/term_capture.py --country uk --one-process-per-turn` for the
+  configured 16-turn UK term plus eight extra turns; its `--orders-dir` mode
+  appends a no-order tail to an existing action sequence. Audit the resulting
+  chain with `gamedrive/term_audit.py`; use
+  `SimulationConfig(minister_resignations=True)` only when the replay should
+  model deterministic below-threshold minister removal.
 - Keep raw native output saves outside the repository and use fresh save names;
   the installed binary is version-pinned to Democracy 3 v1.30.2.
 - Keep raw proprietary saves outside the repository; commit only reviewable

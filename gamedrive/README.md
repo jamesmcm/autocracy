@@ -197,6 +197,7 @@ PYTHONPATH=. uv run python gamedrive/capture.py \
 PYTHONPATH=. uv run python gamedrive/term_capture.py \
   --country uk --load-name turn0_initial \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --one-process-per-turn \
   --capture-prefix autocracy_uk_term_noorders_run42 --timeout 180
 
 # Generate the captured policy sequence, then twelve additional no-order turns
@@ -204,6 +205,7 @@ PYTHONPATH=. uv run python gamedrive/term_capture.py \
   --country uk --load-name turn0_initial \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
   --orders-dir parity_cases/dem3saves \
+  --one-process-per-turn \
   --capture-prefix autocracy_uk_term_orders_run42 --timeout 180
 
 # Compare a no-order term capture offline
@@ -211,6 +213,13 @@ PYTHONPATH=. uv run python gamedrive/capture.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml --no-orders \
   --native-dir /home/gopostal/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_term_noorders_run42 --turns 24
+
+# Audit every serialized section of a long no-order chain
+PYTHONPATH=. uv run python gamedrive/term_audit.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix autocracy_uk_term_noorders_run42 --turns 24 \
+  --minister-resignations
 
 # Load only, then edit one live neuron and persist a separate native save
 PYTHONPATH=. uv run python gamedrive/inject_drive.py --skip-turn \
@@ -236,6 +245,17 @@ The `capture.py` comparison is offline and never launches the game.
 saves. Supplying `--orders-dir` replays the available pre-turn order saves and
 pads the remaining term with explicit no-order turns. The source name is only
 read by the game; every loaded/capture output name is fresh and validated.
+With `--one-process-per-turn`, each completed save becomes the next process's
+load input, producing reliable chain names of the form
+`<prefix>_stepN_turn1.xml` while preserving serialized turns 1 through 24.
+
+`term_audit.py` replays the same orders offline and compares finance, ordinary
+and hidden nodes, situations, voter aggregates and individual values, policy
+current/target/runtime fields, effect histories, party metadata, active
+situations, and serialized minister/election fields. Its manager fields are
+reported as observations: live party membership, activist counts, income-host
+links, and some poll modifiers are rebuilt in memory by the native manager and
+are not serialized into the save.
 
 `--turn-mode sync` is the reliable default. `--turn-mode async` (or the legacy
 `--gameplay-turn`) remains available for experiments, but the GUI launcher is
@@ -269,6 +289,39 @@ process rather than treating it as a completed-turn input. Missing order files
 are replayed as no-op turns, so the supplied fixtures produce exactly twelve
 native output names. `capture.py` aligns each native `<turn>` field with the
 simulator snapshot and reports finance, ordinary-node, and policy residuals.
+
+### 24-turn term capture
+
+On 2026-08-10 the chainable launcher produced 48 validated native saves from
+the unchanged `turn0_initial.xml` source:
+
+```text
+autocracy_uk_term_noorders_chain2_20260810_step{1..24}_turn1.xml
+autocracy_uk_term_orders_chain_20260810_step{1..24}_turn1.xml
+```
+
+The no-order chain reaches the UK election boundary at turn 16 and continues
+through turn 24. The order chain applies the captured policy sequence through
+turn 12 and then uses an explicit no-order tail. `term_audit.py` reports zero
+policy-target differences at every checkpoint in both runs. The first native
+residuals are already visible at turn 1 in voter/party-manager fields and in
+the effect/situation rings; they grow with the non-serialized manager state and
+the global-economy random cursor rather than appearing as a single end-of-term
+failure.
+
+The quiet chain drops the TAX minister at turn 15. Native finance then uses a
+missing-minister competence of `0.25` (`IncomeTax` earn/cost scalars
+`0.9375`/`1.0625`) and applies the configured resignation loyalty change to the
+remaining ministers. The simulator exposes this as the explicit
+`minister_resignations=True` mode. The order chain retains TAX through turn 24,
+which confirms that native resignation is probabilistic and must not be forced
+in every deterministic replay.
+
+After the long-run fixes, the largest quiet-chain absolute finance residuals
+are about 1,737 income and 1,839 expenditure; the order-chain residuals peak
+at about 4,341 income and 27,819 expenditure around the policy/ring transition.
+Those remaining gaps are tracked as effect-ring and native manager boundaries,
+not hidden calibration of a single final checkpoint.
 
 ## Current limitations and safety boundaries
 

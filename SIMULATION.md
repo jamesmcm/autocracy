@@ -71,7 +71,9 @@ Common behavioural patterns handled correctly:
      simulator also retains the baseline active-minister accrual recovered
      from the initial save; for the shipped UK start this is 26 points per
      turn with a 52-point cap. Countries without a baseline save use the
-     configured minister-count fallback.
+     configured minister-count fallback. Loyalty-aware runs use a zero-floor
+     contribution for each active minister; deterministic below-threshold
+     removal is opt-in because the native resignation roll is not serialized.
 
 2. **Action Phase** (`apply_actions`):
    - Each `PolicyAction` contains a `policy_name`, a normalized `delta`, and
@@ -114,12 +116,18 @@ Common behavioural patterns handled correctly:
       based on their satisfaction with the enacted policies — a minister's
       satisfaction is `0.5 + average` of the two voter groups they
       sympathise with, and the gain/drop thresholds interpolate by the
-      minister's experience); otherwise the
-      accrual stays at the value loaded from the save.
+      minister's experience); contributions have a zero floor. Otherwise the
+      accrual stays at the value loaded from the save. The explicit
+      `SimulationConfig.minister_resignations` mode removes below-threshold
+      portfolios and applies `MINISTER_RESIGNS_LOYALTY_CHANGE`; it is not part
+      of the default deterministic replay because native resignation is
+      probabilistic and its RNG cursor is not serialized.
     - Recompute the finance lines from the advanced policy values and the
       advanced ministerial scalars, with the multiplier neurons evaluated at
       the previous turn's nodes and the debt interest charged on the
-      freshly-rolled debt.
+      freshly-rolled debt. A department without an active minister uses the
+      data-driven `minister_fallback.competence` (the captured UK value is
+      `0.25`, yielding earn/cost scalars `0.9375`/`1.0625`).
 
 4. **Random Systems** (`SimulationConfig`):
    - `process_events`, `process_dilemmas`, `process_attacks` and the
@@ -200,6 +208,48 @@ The captured `turn1_initial.xml` includes `turn0_orders.xml`, so it is not a
 valid comparison for that no-order native run. The bounded order driver keeps
 that distinction explicit by applying the pre-turn save before its native
 worker and aligning each output by its serialized `<turn>` field.
+
+### Multi-term native audit
+
+The term-aware driver reads the UK's 16-turn electoral term and generated two
+24-turn chains from the unchanged `parity_cases/dem3saves/turn0_initial.xml`:
+
+```text
+autocracy_uk_term_noorders_chain2_20260810_step{1..24}_turn1.xml
+autocracy_uk_term_orders_chain_20260810_step{1..24}_turn1.xml
+```
+
+The first chain is no-order throughout; the second applies the captured policy
+sequence through turn 12 and then pads the tail with no-order turns. Every
+checkpoint passed native-save validation and serialized turns 1–24. Run the
+complete offline audit with:
+
+```bash
+PYTHONPATH=. uv run python gamedrive/term_audit.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix autocracy_uk_term_noorders_chain2_20260810 --turns 24 \
+  --minister-resignations
+
+# The captured-order chain uses the same audit with its pre-turn order files.
+PYTHONPATH=. uv run python gamedrive/term_audit.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix autocracy_uk_term_orders_chain_20260810 --turns 24 \
+  --orders-dir parity_cases/dem3saves
+```
+
+The audit compares finance, ordinary and hidden nodes, situations, voter
+aggregates and individual values, policy current/target/runtime fields, effect
+histories, party metadata, active situations, and serialized minister/election
+fields at every turn. Policy targets are exact in both chains. The quiet chain
+loses the TAX minister at turn 15; the native manager then uses the measured
+missing-minister fallback and drops the remaining minister loyalties by
+`MINISTER_RESIGNS_LOYALTY_CHANGE`. The policy chain retains TAX, showing that
+the native resignation decision is probabilistic. Live party lists, activist
+counts, income-host links, and some poll modifiers are manager-owned pointers
+rebuilt in process, so the audit reports them as runtime boundaries rather than
+pretending they are serialized simulator inputs.
 
 ---
 
