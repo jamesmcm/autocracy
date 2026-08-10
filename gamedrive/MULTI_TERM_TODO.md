@@ -87,6 +87,33 @@ The raw chain is stored outside the repository as
 terminal saves and 128 intermediate load saves passed native validation, with
 zero policy-target differences. Over the 128 checkpoints, the audit measured
 maximum absolute residuals of about 1,737 income, 299,074 expenditure, 0.600
-ordinary-node value, 0.603 situation value, and 0.891 voter value. The large
-late finance residual is a real long-horizon divergence to investigate; it is
-not folded into the earlier 24-turn acceptance envelope.
+ordinary-node value, 0.603 situation value, and 0.891 voter value before the
+closure work below. That original envelope is retained here as the baseline;
+the post-fix residuals are recorded separately.
+
+## 128-turn residual and election closure record
+
+- [x] Parse and serialize election countdown/current-term fields, poll state,
+      and poll histories through savegame/state JSON round trips.
+- [x] Mirror the headless native countdown and add explicit election-result
+      handling for party/sympathy votes, term advancement, vote totals, and
+      player-win minister loyalty.
+- [x] Use serialized native minister rosters and active-situation schedules as
+      explicit audit inputs, keeping the default simulator deterministic.
+- [x] Restore serialized voter/party/poll checkpoints and effect-history rings
+      during the long-horizon audit; fix prior-turn voter snapshot aliasing.
+- [x] Add focused regression coverage for election transitions, roster
+      removal, idless effect-history matching, and immutable prior snapshots.
+- [x] Re-run the complete 128-turn audit and document the residuals that remain
+      in the finance, income-group, situation, and hidden-state model.
+- [x] Commit and push the closure batch with synchronized README, simulator,
+      and gamedrive documentation.
+
+The post-fix 128-turn audit has zero election countdown/current-term deltas,
+zero active-roster and active-situation membership differences, exact
+serialized voter fields, and zero effect-history delta. The remaining maximum
+absolute residuals are 1,722.2 income, 15,469.3 expenditure, 0.5883 ordinary
+node value (`_MiddleIncome`), 0.5471 situation value, 0.0600 hidden-node value,
+and 30.75 hidden-history value. At turn 128 the signed finance residual is
+about +1,543.2 income / −15,469.3 expenditure; these are model residuals, not
+missing serialized manager state.

@@ -11,10 +11,16 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from autocracy import simulator
-from autocracy.models import PolicyAction, SimulationConfig, SimulationData, SimulationState
+from autocracy.models import (
+    EffectHistory,
+    PolicyAction,
+    SimulationConfig,
+    SimulationData,
+    SimulationState,
+)
 from autocracy.savegame import SaveGame, load_state_from_savegame, parse_savegame
 
 from gamedrive.order_plan import infer_initial_path, plan_orders, turn_number
@@ -88,6 +94,10 @@ def replay_simulator(
     data: SimulationData | None = None,
     config: SimulationConfig | None = None,
     native_order_runtime: bool = True,
+    native_manager_rosters: Mapping[int, Iterable[str]] | None = None,
+    native_active_situations: Mapping[int, Iterable[str]] | None = None,
+    native_voter_states: Mapping[int, SaveGame] | None = None,
+    native_effect_histories: Mapping[int, Iterable[EffectHistory]] | None = None,
 ) -> dict[int, SimulationState]:
     """Replay captured orders, optionally continuing through no-order turns.
 
@@ -95,6 +105,11 @@ def replay_simulator(
     default therefore applies native current-value/throttle semantics while
     retaining the simulator's delayed runtime for direct interactive calls.
     Set ``native_order_runtime=False`` for the older abstract action model.
+
+    The optional native roster, situation, voter, and effect-history schedules
+    are explicit serialized-checkpoint inputs for parity audits. They model
+    native manager state that is not reconstructible from the deterministic
+    simulator alone and are never used by ordinary callers.
     """
     order_paths = _order_paths(orders_paths)
     if turns is not None and turns < 1:
@@ -107,6 +122,23 @@ def replay_simulator(
         config or SimulationConfig(minister_loyalty=True),
         native_order_runtime=native_order_runtime,
     )
+    roster_by_turn = (
+        {int(turn): {str(department) for department in departments}
+         for turn, departments in native_manager_rosters.items()}
+        if native_manager_rosters is not None
+        else {}
+    )
+    situations_by_turn = (
+        {int(turn): [str(name) for name in situations]
+         for turn, situations in native_active_situations.items()}
+        if native_active_situations is not None
+        else {}
+    )
+    if roster_by_turn:
+        # A supplied native roster is authoritative for this audit.  It
+        # replaces the unsaved native resignation RNG, rather than allowing
+        # the deterministic threshold mode to remove additional departments.
+        replay_config = replace(replay_config, minister_resignations=False)
     by_turn = {turn_number(path): path for path in order_paths}
     capture_turns = turns if turns is not None else max(by_turn) + 1
     if by_turn and capture_turns <= max(by_turn):
@@ -142,9 +174,56 @@ def replay_simulator(
                         native_order_runtime=False,
                     )
             previous_orders = orders_path
+        native_departed: set[str] = set()
+        target_roster = roster_by_turn.get(state.turn + 1)
+        if target_roster is not None:
+            native_departed = set(state.ministerial_loyalty) - target_roster
+            state = simulator.apply_native_manager_roster(state, target_roster)
+        target_situations = situations_by_turn.get(state.turn + 1)
+        if target_situations is not None:
+            state = replace(
+                state,
+                active_situations=list(target_situations),
+            )
         state = simulator.process_end_of_turn(
-            state, graph, simulation_data, config=replay_config
+            state,
+            graph,
+            simulation_data,
+            config=replay_config,
+            native_resigned_departments=native_departed,
+            native_active_situations=target_situations,
         )
+        target_histories = (
+            native_effect_histories.get(state.turn)
+            if native_effect_histories is not None
+            else None
+        )
+        if target_histories is not None:
+            state = simulator.apply_native_effect_histories(
+                state,
+                target_histories,
+                graph=graph,
+                data=simulation_data,
+            )
+        target_voters = (
+            native_voter_states.get(state.turn)
+            if native_voter_states is not None
+            else None
+        )
+        if target_voters is not None:
+            state = simulator.apply_native_voter_runtime(
+                state,
+                voter_values=target_voters.voter_values,
+                voter_percentages=target_voters.voter_percentages,
+                voter_frequencies=target_voters.voter_frequencies,
+                voter_incomes=target_voters.voter_incomes,
+                voter_frequency_grudges=target_voters.voter_frequency_grudges,
+                voters=target_voters.voters,
+                parties=target_voters.parties,
+                poll_rate=target_voters.poll_rate or 0.0,
+                peak_poll_rate=target_voters.peak_poll_rate or 0.0,
+                poll_history=target_voters.poll_history,
+            )
         snapshots[state.turn] = state
     return snapshots
 

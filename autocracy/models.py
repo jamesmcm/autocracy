@@ -146,6 +146,8 @@ class CountrySetup:
     min_gdp: float = 0.0
     max_gdp: float = 0.0
     starting_debt: float = 0.0
+    term_length: int = 16
+    max_terms: int = -1
 
 
 @dataclass(slots=True)
@@ -264,6 +266,18 @@ class SimulationState:
     # Serialized party metadata. The live party and voter membership lists
     # remain manager-owned and are not present in the XML save.
     parties: Dict[str, PartyState] = field(default_factory=dict)
+    # ElectionManager state.  The native headless turn worker only decrements
+    # the countdown; ``resolve_election`` is the explicit GUI/result step.
+    election_turns_until: int = 0
+    election_current_term: int = 0
+    election_result: Optional[str] = None
+    last_election_winner: Optional[str] = None
+    election_player_votes: int = 0
+    election_opposition_votes: int = 0
+    election_absent_votes: int = 0
+    poll_rate: float = 0.0
+    peak_poll_rate: float = 0.0
+    poll_history: List[float] = field(default_factory=list)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
     policy_active: Dict[str, bool] = field(default_factory=dict)
     policy_cost_multipliers: Dict[str, float] = field(default_factory=dict)

@@ -424,6 +424,8 @@ def load_country_setup(root: Path, country: str) -> CountrySetup:
         min_gdp=_safe_float(config_data.get("min_gdp", "0")),
         max_gdp=_safe_float(config_data.get("max_gdp", "0")),
         starting_debt=_safe_float(config_data.get("starting_debt", "0")),
+        term_length=int(_safe_float(config_data.get("term_length", "16"), default=16)),
+        max_terms=int(_safe_float(config_data.get("max_terms", "-1"), default=-1)),
     )
 
 

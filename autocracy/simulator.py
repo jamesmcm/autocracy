@@ -454,6 +454,13 @@ def _seed_state_from_initial_save(
     state.ministerial_sympathies = {
         k: list(v) for k, v in save.ministerial_sympathies.items()
     }
+    if save.election_turns_until is not None:
+        state.election_turns_until = save.election_turns_until
+    if save.election_current_term is not None:
+        state.election_current_term = save.election_current_term
+    state.poll_rate = save.poll_rate or 0.0
+    state.peak_poll_rate = save.peak_poll_rate or 0.0
+    state.poll_history = list(save.poll_history)
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position
@@ -620,6 +627,8 @@ def get_initial_state(
         policy_finance_levels=policies.copy(),
         political_capital_income=starting_capital,
         global_economy_position=setup.economic_cycle_start,
+        election_turns_until=max(0, setup.term_length),
+        election_current_term=0,
     )
     # A fresh native VoterManager seeds its linked-list percentage from the
     # CSV column, while the nested frequency neuron itself starts at zero.
@@ -2213,6 +2222,119 @@ def _remove_resigned_ministers(
     return resigned
 
 
+def apply_native_manager_roster(
+    state: SimulationState,
+    departments: Iterable[str],
+) -> SimulationState:
+    """Align active minister portfolios with a serialized native checkpoint.
+
+    Democracy 3 does not serialize the random resignation cursor, so a
+    deterministic loyalty replay cannot infer the exact native roster.  The
+    long-chain audit can, however, use the roster written by the native save
+    as an explicit replay input.  This helper only removes portfolios; it
+    never invents a replacement minister for a department absent from the
+    current state.
+    """
+    active = {str(department) for department in departments}
+
+    def keep_active(values: Dict[str, object]) -> Dict[str, object]:
+        return {name: value for name, value in values.items() if name in active}
+
+    return replace(
+        state,
+        ministerial_effectiveness=keep_active(state.ministerial_effectiveness),
+        ministerial_competence=keep_active(state.ministerial_competence),
+        ministerial_experience=keep_active(state.ministerial_experience),
+        ministerial_suitability=keep_active(state.ministerial_suitability),
+        ministerial_loyalty=keep_active(state.ministerial_loyalty),
+        ministerial_volatility=keep_active(state.ministerial_volatility),
+        ministerial_value=keep_active(state.ministerial_value),
+        ministerial_sympathies=keep_active(state.ministerial_sympathies),
+    )
+
+
+def apply_native_voter_runtime(
+    state: SimulationState,
+    *,
+    voter_values: Dict[str, float],
+    voter_percentages: Dict[str, float],
+    voter_frequencies: Dict[str, float],
+    voter_incomes: Dict[str, float],
+    voter_frequency_grudges: Dict[str, float],
+    voters: Iterable[Voter],
+    parties: Dict[str, PartyState],
+    poll_rate: float = 0.0,
+    peak_poll_rate: float = 0.0,
+    poll_history: Iterable[float] = (),
+) -> SimulationState:
+    """Restore serialized voter-manager state for a checkpoint replay.
+
+    The native voter manager keeps live linked lists and host pointers that
+    cannot be reconstructed from a save.  Its serialized voter aggregates,
+    party rings, individual vote enums, and poll ring are safe explicit
+    inputs for an offline parity audit; the default simulator never calls
+    this bridge.
+    """
+    values = state.values.copy()
+    for mapping in (
+        voter_values,
+        voter_percentages,
+        voter_frequencies,
+        voter_incomes,
+    ):
+        values.update({str(name): float(value) for name, value in mapping.items()})
+    return replace(
+        state,
+        values=values,
+        voter_values={str(name): float(value) for name, value in voter_values.items()},
+        voter_percentages={
+            str(name): float(value) for name, value in voter_percentages.items()
+        },
+        voter_frequencies={
+            str(name): float(value) for name, value in voter_frequencies.items()
+        },
+        voter_incomes={
+            str(name): float(value) for name, value in voter_incomes.items()
+        },
+        voter_frequency_grudges={
+            str(name): float(value)
+            for name, value in voter_frequency_grudges.items()
+        },
+        voters=[_copy_voter(voter) for voter in voters],
+        parties={name: _copy_party(party) for name, party in parties.items()},
+        poll_rate=float(poll_rate),
+        peak_poll_rate=float(peak_poll_rate),
+        poll_history=[float(value) for value in poll_history],
+    )
+
+
+def apply_native_effect_histories(
+    state: SimulationState,
+    histories: Iterable[EffectHistory],
+    graph: Optional[nx.DiGraph] = None,
+    data: Optional[SimulationData] = None,
+) -> SimulationState:
+    """Restore serialized inertial rings for a checkpoint replay."""
+    history_copy = [
+        EffectHistory(
+            history.source,
+            history.target,
+            list(history.values),
+            history.effect_id,
+        )
+        for history in histories
+    ]
+    restored = replace(
+        state,
+        effect_histories=history_copy,
+    )
+    if graph is not None:
+        restored.effects = _initialize_effect_memory(
+            restored, graph, data=data, effect_histories=history_copy
+        )
+    return restored
+
+
 def _minister_fallback_competence(data: SimulationData) -> float:
     """Return the competence used by native finance without a minister."""
     return float(
@@ -2654,13 +2776,32 @@ def recompute_effects(
     return state
 
 
+def _election_term_length(state: SimulationState, data: SimulationData) -> int:
+    """Return the mission's serialized election interval."""
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    return max(1, setup.term_length)
+
+
+def _advance_election_countdown(
+    state: SimulationState, data: SimulationData
+) -> int:
+    """Mirror ``SIM_ElectionManager::NextTurn`` in the headless path."""
+    if state.election_turns_until > 0:
+        return state.election_turns_until - 1
+    return _election_term_length(state, data) - 1
+
+
 def process_end_of_turn(
     state: SimulationState,
     graph: nx.DiGraph,
     data: Optional[SimulationData] = None,
     config: Optional[SimulationConfig] = None,
+    *,
+    native_resigned_departments: Optional[Iterable[str]] = None,
+    native_active_situations: Optional[Iterable[str]] = None,
 ) -> SimulationState:
     data = data or load_simulation_data()
+    election_turns_until = _advance_election_countdown(state, data)
     source_policies = state.policies.copy()
     policy_cost_histories, policy_income_histories = _advance_policy_finance_histories(
         state, data
@@ -2675,6 +2816,13 @@ def process_end_of_turn(
         ministerial_experience=experience,
         ministerial_competence=competence,
         ministerial_effectiveness=effectiveness,
+        voter_values=state.voter_values.copy(),
+        voter_percentages=state.voter_percentages.copy(),
+        voter_frequencies=state.voter_frequencies.copy(),
+        voter_incomes=state.voter_incomes.copy(),
+        voter_frequency_grudges=state.voter_frequency_grudges.copy(),
+        voters=[_copy_voter(voter) for voter in state.voters],
+        parties={name: _copy_party(party) for name, party in state.parties.items()},
     )
     runtime_state = _advance_policy_runtime(minister_runtime_state, data)
     # FinanceManager::NextTurn rolls debt before the effect vector and hidden
@@ -2761,6 +2909,18 @@ def process_end_of_turn(
                         0.0,
                         1.0,
                     )
+        native_resigned = set(native_resigned_departments or ())
+        if native_resigned:
+            loyalty_change = data.sim_config.get(
+                "MINISTER_RESIGNS_LOYALTY_CHANGE", -0.06
+            )
+            for department in ministerial_loyalty:
+                if department not in native_resigned:
+                    ministerial_loyalty[department] = _clamp(
+                        ministerial_loyalty[department] + loyalty_change,
+                        0.0,
+                        1.0,
+                    )
     capital_per_minister = data.sim_config.get("POLITICAL_CAPITAL_PER_MINISTER", 6.0)
     max_multiplier = data.sim_config.get("POLITICAL_CAPITAL_MAX_MULTIPLIER", 2.0)
     if config is not None and config.minister_loyalty:
@@ -2777,6 +2937,8 @@ def process_end_of_turn(
         0.0,
         capital_cap,
     )
+    if native_active_situations is not None:
+        active_situations = [str(name) for name in native_active_situations]
     new_state = SimulationState(
         country=runtime_state.country,
         turn=runtime_state.turn + 1,
@@ -2813,6 +2975,16 @@ def process_end_of_turn(
             name: _copy_party(party)
             for name, party in runtime_state.parties.items()
         },
+        election_turns_until=election_turns_until,
+        election_current_term=runtime_state.election_current_term,
+        election_result=runtime_state.election_result,
+        last_election_winner=runtime_state.last_election_winner,
+        election_player_votes=runtime_state.election_player_votes,
+        election_opposition_votes=runtime_state.election_opposition_votes,
+        election_absent_votes=runtime_state.election_absent_votes,
+        poll_rate=runtime_state.poll_rate,
+        peak_poll_rate=runtime_state.peak_poll_rate,
+        poll_history=list(runtime_state.poll_history),
         policy_implementations=runtime_state.policy_implementations.copy(),
         policy_active=runtime_state.policy_active.copy(),
         policy_cost_multipliers=runtime_state.policy_cost_multipliers.copy(),
@@ -2868,6 +3040,77 @@ def process_end_of_turn(
         # the live current values; only the following debt preview is delayed.
         new_state.policy_finance_levels = new_state.policies.copy()
     return _run_stochastic_systems(new_state, graph, data, config)
+
+
+def resolve_election(
+    state: SimulationState,
+    data: Optional[SimulationData] = None,
+) -> SimulationState:
+    """Count an election whose native countdown has reached zero.
+
+    The headless native capture path stops at the zero countdown and leaves
+    ``currentterm`` and ``lastvote`` unchanged.  A real result is a separate
+    election-manager operation, so callers invoke this function explicitly.
+    Votes use the serialized party membership first, then sympathy for
+    currently unaligned voters; voters without a clear preference abstain.
+    Native vote enums are retained as ``0`` (player), ``1`` (opposition), and
+    ``2`` (absent), matching ``SIM_Voter::CastVote``.
+    """
+    data = data or load_simulation_data()
+    if state.election_turns_until != 0:
+        raise ValueError("election is not ready to resolve")
+
+    player_party = next(
+        (party.name for party in state.parties.values() if party.party_type == 0),
+        None,
+    )
+    opposition_party = next(
+        (party.name for party in state.parties.values() if party.party_type == 1),
+        None,
+    )
+    player_votes = 0
+    opposition_votes = 0
+    absent_votes = 0
+    counted_voters: list[Voter] = []
+    for voter in state.voters:
+        if player_party is not None and voter.party == player_party:
+            vote = 0
+        elif opposition_party is not None and voter.party == opposition_party:
+            vote = 1
+        elif voter.player_sympathy > voter.opposition_sympathy and voter.player_sympathy >= 0.5:
+            vote = 0
+        elif voter.opposition_sympathy > voter.player_sympathy and voter.opposition_sympathy >= 0.5:
+            vote = 1
+        else:
+            vote = 2
+        if vote == 0:
+            player_votes += 1
+        elif vote == 1:
+            opposition_votes += 1
+        else:
+            absent_votes += 1
+        counted_voters.append(replace(voter, last_vote=vote))
+
+    winner = "player" if player_votes > opposition_votes else "opposition"
+    loyalties = state.ministerial_loyalty.copy()
+    if winner == "player":
+        boost = data.sim_config.get("MINISTER_ELECTIONWIN_BOOST", 0.12)
+        loyalties = {
+            department: _clamp(value + boost, 0.0, 1.0)
+            for department, value in loyalties.items()
+        }
+    return replace(
+        state,
+        voters=counted_voters,
+        election_turns_until=_election_term_length(state, data),
+        election_current_term=state.election_current_term + 1,
+        election_result="win" if winner == "player" else "loss",
+        last_election_winner=winner,
+        election_player_votes=player_votes,
+        election_opposition_votes=opposition_votes,
+        election_absent_votes=absent_votes,
+        ministerial_loyalty=loyalties,
+    )
 
 
 def _run_stochastic_systems(
@@ -3051,6 +3294,16 @@ def apply_actions(
         parties={
             name: _copy_party(party) for name, party in state.parties.items()
         },
+        election_turns_until=state.election_turns_until,
+        election_current_term=state.election_current_term,
+        election_result=state.election_result,
+        last_election_winner=state.last_election_winner,
+        election_player_votes=state.election_player_votes,
+        election_opposition_votes=state.election_opposition_votes,
+        election_absent_votes=state.election_absent_votes,
+        poll_rate=state.poll_rate,
+        peak_poll_rate=state.peak_poll_rate,
+        poll_history=list(state.poll_history),
         policy_implementations=policy_implementations,
         policy_active=policy_active,
         policy_cost_multipliers=state.policy_cost_multipliers.copy(),
@@ -3236,6 +3489,16 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
             }
             for name, party in state.parties.items()
         },
+        "election_turns_until": state.election_turns_until,
+        "election_current_term": state.election_current_term,
+        "election_result": state.election_result,
+        "last_election_winner": state.last_election_winner,
+        "election_player_votes": state.election_player_votes,
+        "election_opposition_votes": state.election_opposition_votes,
+        "election_absent_votes": state.election_absent_votes,
+        "poll_rate": state.poll_rate,
+        "peak_poll_rate": state.peak_poll_rate,
+        "poll_history": list(state.poll_history),
         "policy_implementations": state.policy_implementations,
         "policy_active": state.policy_active,
         "policy_cost_multipliers": state.policy_cost_multipliers,
@@ -3362,6 +3625,24 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
             )
             for name, value in dict(payload.get("parties", {})).items()
         },
+        election_turns_until=int(payload.get("election_turns_until", 0)),
+        election_current_term=int(payload.get("election_current_term", 0)),
+        election_result=(
+            str(payload["election_result"])
+            if payload.get("election_result") is not None
+            else None
+        ),
+        last_election_winner=(
+            str(payload["last_election_winner"])
+            if payload.get("last_election_winner") is not None
+            else None
+        ),
+        election_player_votes=int(payload.get("election_player_votes", 0)),
+        election_opposition_votes=int(payload.get("election_opposition_votes", 0)),
+        election_absent_votes=int(payload.get("election_absent_votes", 0)),
+        poll_rate=float(payload.get("poll_rate", 0.0)),
+        peak_poll_rate=float(payload.get("peak_poll_rate", 0.0)),
+        poll_history=[float(value) for value in payload.get("poll_history", [])],
         policy_implementations={
             k: float(v)
             for k, v in dict(payload.get("policy_implementations", {})).items()

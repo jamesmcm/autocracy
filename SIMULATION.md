@@ -139,6 +139,14 @@ Common behavioural patterns handled correctly:
       minister uses the data-driven `minister_fallback.competence` (the
       captured UK value is `0.25`, yielding earn/cost scalars
       `0.9375`/`1.0625`).
+   - Electoral countdowns follow the headless native turn worker: a positive
+     countdown decrements, while a zero countdown starts the next serialized
+     interval at `term_length - 1`. The headless worker does not invoke the GUI
+     result screen, so it does not change the current term. Call
+     `resolve_election(state, data=None)` when the countdown is zero to count
+     party and sympathy votes, persist the result and vote totals, increment
+     the term, reset the countdown, and apply the native player-win loyalty
+     boost.
 
 4. **Random Systems** (`SimulationConfig`):
    - `process_events`, `process_dilemmas`, `process_attacks` and the
@@ -239,8 +247,7 @@ complete offline audit with:
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
   --native-dir /home/gopostal/.local/share/democracy3/savegames \
-  --native-prefix autocracy_uk_term_noorders_chain2_20260810 --turns 24 \
-  --minister-resignations
+  --native-prefix autocracy_uk_term_noorders_chain2_20260810 --turns 24
 
 # The captured-order chain uses the same audit with its pre-turn order files.
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
@@ -254,22 +261,29 @@ The audit compares finance, ordinary and hidden nodes, situations, voter
 aggregates and individual values, policy current/target/runtime fields, effect
 histories, party metadata, active situations, and serialized minister/election
 fields at every turn. Policy targets are exact in both chains. The quiet chain
-loses the TAX minister at turn 15; the native manager then uses the measured
-missing-minister fallback and drops the remaining minister loyalties by
-`MINISTER_RESIGNS_LOYALTY_CHANGE`. The policy chain retains TAX, showing that
-the native resignation decision is probabilistic. Live party lists, activist
-counts, income-host links, and some poll modifiers are manager-owned pointers
-rebuilt in process, so the audit reports them as runtime boundaries rather than
-pretending they are serialized simulator inputs.
+loses the TAX minister at turn 15; the audit now applies that serialized native
+roster and the measured missing-minister fallback, including the remaining
+loyalty penalty. The policy chain retains TAX, showing that the native
+resignation decision is probabilistic. `--minister-resignations` remains a
+legacy deterministic fallback for replays without native roster checkpoints.
+Live party lists, activist counts, income-host links, and some poll modifiers
+are manager-owned pointers rebuilt in process, so the audit reports them as
+runtime boundaries rather than pretending they are serialized simulator inputs.
 
 The same launcher also supports a 128-turn no-order stress chain. The
 2026-08-10 run produced 128 validated terminal saves plus 128 intermediate load
-saves from `turn0_initial.xml`, with zero policy-target differences. Using
-`--minister-resignations`, the 128-checkpoint audit reached maximum absolute
-residuals of about 1,737 income, 299,074 expenditure, 0.600 ordinary-node
-value, 0.603 situation value, and 0.891 voter value. These late-horizon
-finance and manager/effect-ring differences remain an explicit parity target;
-the shorter 24-turn acceptance results are not extrapolated to 128 turns.
+saves from `turn0_initial.xml`, with zero policy-target differences. The
+post-fix audit feeds each checkpoint's serialized minister roster, active
+situations, voter/party/poll state, and effect histories into the replay. This
+closes the election countdown/current-term deltas, active roster/situation
+membership, serialized voter fields, and effect-history comparisons to zero.
+The remaining model residual envelope is 1,722.2 income, 15,469.3 expenditure,
+0.5883 ordinary-node value (`_MiddleIncome`), 0.5471 situation value, 0.0600
+hidden-node value, and 30.75 hidden-history value. At turn 128 the signed
+finance residual is +1,543.2 income / −15,469.3 expenditure and the largest
+ordinary residual is 0.5828. These are the remaining global-economy,
+income-group, situation, and finance-model differences; the checkpoint
+schedule is an audit-only oracle and is not part of the default simulator.
 
 ---
 

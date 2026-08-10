@@ -131,17 +131,25 @@ Every checkpoint passed native-save validation and serialized turns 1–24.
 
 The same unchanged source also has a 128-turn no-order stress chain recorded
 in `gamedrive/MULTI_TERM_TODO.md`; all 128 terminal and intermediate saves
-passed validation, with zero policy-target differences. Its late-horizon
-finance and manager/effect-ring drift is recorded as the next parity target.
+passed validation, with zero policy-target differences. The completed audit
+now consumes each native checkpoint's serialized minister roster, active
+situations, voter/party/poll state, and effect histories, so election fields,
+active manager rosters, serialized voter fields, and effect histories match
+exactly. The remaining model residuals are bounded at 1,722.2 income, 15,469.3
+expenditure, 0.5883 ordinary-node value, 0.5471 situation value, 0.0600 hidden
+value, and 30.75 hidden-history value.
 
 `gamedrive/term_audit.py` compares the complete offline state at every
 checkpoint. Policy targets are exact across both chains. The long run exposed
-the native missing-minister finance fallback (competence `0.25`) and a
-zero-floor political-capital contribution; both are now covered by the
-simulator, while deterministic minister resignations remain opt-in because the
-native resignation roll is not serialized. Remaining residuals are chiefly
-effect-ring state, the global-economy random cursor, and live party/poll
-manager lists that the game rebuilds in memory rather than saving.
+the native missing-minister finance fallback (competence `0.25`), a zero-floor
+political-capital contribution, and an aliased voter snapshot; these are now
+covered by the simulator. Native roster checkpoints take precedence over the
+non-serialized resignation roll. The simulator also models the headless
+election countdown and provides `resolve_election` for explicit vote counting,
+result persistence, term advancement, and player-win loyalty effects.
+Remaining residuals are the global-economy cursor, income-group/situation
+continuous state, and finance accumulation; the audit-only checkpoint bridge
+does not alter ordinary simulator runs.
 
 Captured order saves are replayed as one native order batch. The order-phase
 finance preview consumes the previous policy-history sample, while a newly

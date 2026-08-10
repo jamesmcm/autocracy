@@ -1,8 +1,10 @@
 """Audit long native chains against simulator snapshots.
 
-The native XML is the source of truth for serialized state.  This report keeps
-that state separate from the live party/poll manager census: those pointers are
-not saved and therefore cannot be reconstructed by the offline simulator.
+The native XML is the source of truth for serialized state.  The command-line
+audit can feed serialized checkpoint rosters, voter data, and effect histories
+back into the replay so residuals describe the simulator model rather than
+missing save fields.  The default simulator remains independent of those
+oracle schedules; live party/poll pointers are still not saved by the game.
 """
 
 from __future__ import annotations
@@ -67,6 +69,8 @@ class TermAuditRow:
     effect_history_max_delta: float
     active_minister_missing: int
     active_minister_extra: int
+    election_turns_until_delta: int | None
+    election_current_term_delta: int | None
     native_poll_rate: float | None
     native_turns_until_election: int | None
     native_current_term: int | None
@@ -178,17 +182,26 @@ def _history_max_delta(
 def _effect_history_max_delta(
     actual: Iterable[object], expected: Iterable[object]
 ) -> float:
-    def key(history: object) -> tuple[str, str, str]:
-        return (
-            getattr(history, "effect_id", "") or "",
-            getattr(history, "source", ""),
-            getattr(history, "target", ""),
-        )
-
-    actual_by_key = {key(history): history for history in actual}
+    actual_by_id: dict[str, object] = {}
+    actual_by_pair: dict[tuple[str, str], list[object]] = {}
+    for history in actual:
+        effect_id = getattr(history, "effect_id", "") or ""
+        pair = (getattr(history, "source", ""), getattr(history, "target", ""))
+        if effect_id:
+            actual_by_id[effect_id] = history
+        actual_by_pair.setdefault(pair, []).append(history)
     maximum = 0.0
     for expected_history in expected:
-        actual_history = actual_by_key.get(key(expected_history))
+        effect_id = getattr(expected_history, "effect_id", "") or ""
+        pair = (
+            getattr(expected_history, "source", ""),
+            getattr(expected_history, "target", ""),
+        )
+        if effect_id:
+            actual_history = actual_by_id.get(effect_id)
+        else:
+            matching = actual_by_pair.get(pair, [])
+            actual_history = matching.pop(0) if matching else None
         if actual_history is None:
             maximum = max(maximum, 1.0)
             continue
@@ -309,6 +322,16 @@ def audit_turn(
         ),
         active_minister_missing=len(native_ministers - active_ministers),
         active_minister_extra=len(active_ministers - native_ministers),
+        election_turns_until_delta=(
+            state.election_turns_until - manager.turns_until_election
+            if manager.turns_until_election is not None
+            else None
+        ),
+        election_current_term_delta=(
+            state.election_current_term - manager.current_term
+            if manager.current_term is not None
+            else None
+        ),
         native_poll_rate=manager.poll_rate,
         native_turns_until_election=manager.turns_until_election,
         native_current_term=manager.current_term,
@@ -344,7 +367,9 @@ def _print_rows(rows: Sequence[TermAuditRow]) -> None:
             f"{row.voter_value_max_delta:.4f}, {row.voter_percentage_max_delta:.4f}, "
             f"{row.voter_frequency_max_delta:.4f}, {row.voter_income_max_delta:.4f} | "
             f"{row.policy_target_differences} | {row.party_differences} | "
-            f"{row.native_poll_rate!s}, {row.native_turns_until_election!s}"
+            f"{row.native_poll_rate!s}, {row.native_turns_until_election!s} "
+            f"(election Δ {row.election_turns_until_delta!s}, "
+            f"term Δ {row.election_current_term_delta!s})"
         )
 
 
@@ -358,7 +383,10 @@ def main() -> int:
     parser.add_argument(
         "--minister-resignations",
         action="store_true",
-        help="opt into deterministic below-threshold minister removal",
+        help=(
+            "use deterministic below-threshold minister removal as a legacy "
+            "fallback when no native roster schedule is supplied"
+        ),
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
@@ -371,6 +399,16 @@ def main() -> int:
     )
     for path in native_paths:
         validate_native_save(path)
+    parsed_native = [(path, parse_savegame(path)) for path in native_paths]
+    native_saves = {save.turn: save for _, save in parsed_native}
+    native_paths_by_turn = {save.turn: path for path, save in parsed_native}
+    native_rosters = {
+        turn: native_manager_summary(native_paths_by_turn[turn]).active_minister_departments
+        for turn in native_saves
+    }
+    native_situations = {
+        turn: save.active_situations for turn, save in native_saves.items()
+    }
     data = simulator.load_simulation_data()
     snapshots = replay_simulator(
         args.initial_file,
@@ -381,6 +419,12 @@ def main() -> int:
             minister_loyalty=True,
             minister_resignations=args.minister_resignations,
         ),
+        native_manager_rosters=native_rosters,
+        native_active_situations=native_situations,
+        native_voter_states=native_saves,
+        native_effect_histories={
+            turn: save.effect_histories for turn, save in native_saves.items()
+        },
     )
     rows = audit_chain(native_paths, snapshots, data)
     if args.json:

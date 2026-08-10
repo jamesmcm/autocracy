@@ -4,6 +4,9 @@ High-level helpers exposed for consumers of the simulator package.
 
 from .simulator import (
     apply_actions,
+    apply_native_manager_roster,
+    apply_native_effect_histories,
+    apply_native_voter_runtime,
     build_country_graph,
     get_initial_state,
     list_available_actions,
@@ -11,6 +14,7 @@ from .simulator import (
     load_state,
     process_end_of_turn,
     recompute_effects,
+    resolve_election,
     save_state,
     state_from_dict,
     state_to_dict,
@@ -24,6 +28,9 @@ from .savegame import (
 
 __all__ = [
     "apply_actions",
+    "apply_native_manager_roster",
+    "apply_native_effect_histories",
+    "apply_native_voter_runtime",
     "build_country_graph",
     "get_initial_state",
     "list_available_actions",
@@ -31,6 +38,7 @@ __all__ = [
     "load_state",
     "process_end_of_turn",
     "recompute_effects",
+    "resolve_election",
     "save_state",
     "state_from_dict",
     "state_to_dict",

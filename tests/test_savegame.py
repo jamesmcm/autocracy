@@ -32,6 +32,11 @@ def test_parse_savegame_extracts_core_sections():
         save.policies["BusLanes"]
     )
     assert save.political_capital == pytest.approx(26.0)
+    assert save.election_turns_until == 16
+    assert save.election_current_term == 0
+    assert save.poll_rate == pytest.approx(0.113)
+    assert save.peak_poll_rate == pytest.approx(0.13277972)
+    assert len(save.poll_history) == 20
     assert save.total_income > 0
     assert save.total_expenditure > 0
     assert len(save.hidden_histories["_globaleconomy_"]) == 33

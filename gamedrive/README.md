@@ -252,10 +252,12 @@ load input, producing reliable chain names of the form
 `term_audit.py` replays the same orders offline and compares finance, ordinary
 and hidden nodes, situations, voter aggregates and individual values, policy
 current/target/runtime fields, effect histories, party metadata, active
-situations, and serialized minister/election fields. Its manager fields are
-reported as observations: live party membership, activist counts, income-host
-links, and some poll modifiers are rebuilt in memory by the native manager and
-are not serialized into the save.
+situations, and serialized minister/election fields. For parity audits it feeds
+the serialized native roster, active-situation schedule, voter/party/poll
+state, and effect histories back into the replay; these are explicit checkpoint
+oracles, not defaults for the simulator. Live party membership, activist
+counts, income-host links, and some poll modifiers are still rebuilt in memory
+by the native manager and are not serialized into the save.
 
 The simulator's native replay path applies each turn's complete orders save as
 one batch. Its debt preview consumes the previous policy-history level; a new
@@ -345,17 +347,25 @@ PYTHONPATH=. uv run python gamedrive/term_capture.py \
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
   --native-dir /home/gopostal/.local/share/democracy3/savegames \
-  --native-prefix autocracy_uk_128turn_noorders_20260810 --turns 128 \
-  --minister-resignations
+  --native-prefix autocracy_uk_128turn_noorders_20260810 --turns 128
 ```
 
 All 128 terminal saves and 128 intermediate load saves passed native
-validation, and policy targets remained exact at every checkpoint. Across the
-long horizon, the documented deterministic-resignation replay reached maximum
-absolute residuals of about 1,737 income, 299,074 expenditure, 0.600 ordinary
-node value, 0.603 situation value, and 0.891 voter value. The growing finance
-and manager/effect-ring drift is now a long-horizon parity target rather than
-an unmeasured end-of-term failure.
+validation, and policy targets remained exact at every checkpoint. The audit
+now aligns serialized minister rosters, active situations, voter/party/poll
+state, and effect histories at every turn; election countdown/current-term
+deltas and those serialized checkpoint comparisons are zero. The remaining
+model maximum absolute residuals are 1,722.2 income, 15,469.3 expenditure,
+0.5883 ordinary-node value (`_MiddleIncome`), 0.5471 situation value, 0.0600
+hidden-node value, and 30.75 hidden-history value. At turn 128 the signed
+finance residual is +1,543.2 income / −15,469.3 expenditure and the largest
+ordinary-node residual is 0.5828. The checkpoint schedules are audit-only;
+the default simulator still runs without native state injection.
+
+The election model mirrors the headless native worker's countdown, then
+`autocracy.simulator.resolve_election` explicitly counts party/sympathy votes,
+records win/loss and vote totals, advances the term, resets the countdown, and
+applies the player-win minister-loyalty boost.
 
 ### Fresh intervention rollout
 

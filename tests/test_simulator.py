@@ -25,6 +25,9 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.political_capital_income == state.political_capital_income
     assert restored.voter_frequency_grudges == state.voter_frequency_grudges
     assert restored.voter_incomes == state.voter_incomes
+    assert restored.election_turns_until == state.election_turns_until
+    assert restored.election_current_term == state.election_current_term
+    assert restored.poll_history == state.poll_history
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
     reloaded = simulator.load_state(out_path)
@@ -162,6 +165,100 @@ def test_process_end_of_turn_advances_turn_and_updates_values():
     next_state = simulator.process_end_of_turn(state, graph)
     assert next_state.turn == state.turn + 1
     assert next_state.values["GDP"] != pytest.approx(state.values["GDP"])
+
+
+def test_process_end_of_turn_preserves_previous_manager_snapshot():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    before_voters = [
+        (v.value, v.income, v.party, v.last_vote, dict(v.groups))
+        for v in state.voters
+    ]
+    before_parties = {
+        name: (
+            party.status,
+            party.members_last_turn,
+            tuple(party.member_history),
+            tuple(party.activist_history),
+        )
+        for name, party in state.parties.items()
+    }
+    before_values = state.voter_values.copy()
+
+    next_state = simulator.process_end_of_turn(state, graph, data=data)
+
+    assert next_state.voters is not state.voters
+    assert [
+        (v.value, v.income, v.party, v.last_vote, dict(v.groups))
+        for v in state.voters
+    ] == before_voters
+    assert {
+        name: (
+            party.status,
+            party.members_last_turn,
+            tuple(party.member_history),
+            tuple(party.activist_history),
+        )
+        for name, party in state.parties.items()
+    } == before_parties
+    assert state.voter_values == before_values
+
+
+def test_election_countdown_matches_native_headless_turns():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+
+    for expected in (*range(15, -1, -1), 15):
+        state = simulator.process_end_of_turn(state, graph, data=data)
+        assert state.election_turns_until == expected
+        assert state.election_current_term == 0
+
+
+def test_resolve_election_counts_votes_and_starts_new_term():
+    data = simulator.load_simulation_data()
+    state, _ = simulator.get_initial_state("uk")
+    state = replace(
+        state,
+        election_turns_until=0,
+        parties={
+            "Player": PartyState("Player", party_type=0),
+            "Opposition": PartyState("Opposition", party_type=1),
+        },
+        voters=[
+            Voter(party="Player"),
+            Voter(party="Opposition"),
+            Voter(player_sympathy=0.8),
+        ],
+        ministerial_loyalty={"TAX": 0.5},
+    )
+
+    result = simulator.resolve_election(state, data)
+
+    assert result.election_result == "win"
+    assert result.last_election_winner == "player"
+    assert result.election_player_votes == 2
+    assert result.election_opposition_votes == 1
+    assert result.election_absent_votes == 0
+    assert result.election_current_term == 1
+    assert result.election_turns_until == 16
+    assert [v.last_vote for v in result.voters] == [0, 1, 0]
+    assert result.ministerial_loyalty["TAX"] == pytest.approx(0.62)
+
+
+def test_native_manager_roster_can_remove_all_missing_departments():
+    state, _ = simulator.get_initial_state("uk")
+    state = simulator.apply_native_manager_roster(state, {"ECONOMY"})
+
+    assert set(state.ministerial_loyalty) == {"ECONOMY"}
+    assert set(state.ministerial_experience) == {"ECONOMY"}
+    assert set(state.ministerial_sympathies) == {"ECONOMY"}
+
+    empty = simulator.apply_native_manager_roster(state, set())
+    assert not empty.ministerial_loyalty
 
 
 def test_party_membership_uses_native_approval_and_sympathy_guards():

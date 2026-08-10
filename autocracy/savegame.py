@@ -80,6 +80,11 @@ class SaveGame:
     ministerial_volatility: Dict[str, float] = field(default_factory=dict)
     ministerial_value: Dict[str, float] = field(default_factory=dict)
     ministerial_sympathies: Dict[str, List[str]] = field(default_factory=dict)
+    election_turns_until: int | None = None
+    election_current_term: int | None = None
+    poll_rate: float | None = None
+    peak_poll_rate: float | None = None
+    poll_history: List[float] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -355,6 +360,36 @@ def parse_savegame(path: str | Path) -> SaveGame:
         global_economy_position = _first_history_value(global_economy_elem.findtext("pos"))
         global_economy_years = _first_history_value(global_economy_elem.findtext("years"))
         global_economy_intensity = _first_history_value(global_economy_elem.findtext("intens"))
+    election_turns_until: int | None = None
+    election_current_term: int | None = None
+    election_elem = root.find("election")
+    if election_elem is not None:
+        try:
+            election_turns_until = int(
+                float(election_elem.findtext("turnsuntilelection", default="0"))
+            )
+        except (TypeError, ValueError):
+            election_turns_until = None
+        try:
+            election_current_term = int(
+                float(election_elem.findtext("currentterm", default="0"))
+            )
+        except (TypeError, ValueError):
+            election_current_term = None
+    poll_rate: float | None = None
+    peak_poll_rate: float | None = None
+    poll_history: List[float] = []
+    polls_elem = root.find("polls")
+    if polls_elem is not None:
+        try:
+            poll_rate = float(polls_elem.findtext("potentialvoterate", default="0"))
+        except (TypeError, ValueError):
+            poll_rate = None
+        try:
+            peak_poll_rate = float(polls_elem.findtext("peakvoterate", default="0"))
+        except (TypeError, ValueError):
+            peak_poll_rate = None
+        poll_history = _history_values(polls_elem.findtext("history"))
     hidden_values: Dict[str, float] = {}
     hidden_histories: Dict[str, List[float]] = {}
     simulation_elem = root.find("simulation")
@@ -606,6 +641,11 @@ def parse_savegame(path: str | Path) -> SaveGame:
         ministerial_volatility=ministerial_volatility,
         ministerial_value=ministerial_value,
         ministerial_sympathies=ministerial_sympathies,
+        election_turns_until=election_turns_until,
+        election_current_term=election_current_term,
+        poll_rate=poll_rate,
+        peak_poll_rate=peak_poll_rate,
+        poll_history=poll_history,
         inherited_values=inherited_values,
         debt=debt,
         interest_rate=interest_rate,
@@ -690,6 +730,13 @@ def state_from_savegame(
     state.ministerial_sympathies = {
         k: list(v) for k, v in save.ministerial_sympathies.items()
     }
+    if save.election_turns_until is not None:
+        state.election_turns_until = save.election_turns_until
+    if save.election_current_term is not None:
+        state.election_current_term = save.election_current_term
+    state.poll_rate = save.poll_rate or 0.0
+    state.peak_poll_rate = save.peak_poll_rate or 0.0
+    state.poll_history = list(save.poll_history)
     state.situations = save.situations.copy()
     state.active_situations = save.active_situations.copy()
     state.global_economy_position = save.global_economy_position
