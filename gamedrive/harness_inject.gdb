@@ -18,7 +18,10 @@ commands
   continue
 end
 
-break mainLoop
+# mainLoop is one long-lived internal loop, so it is not re-entered once the
+# process starts.  GameProc is called from the loop once per active frame and
+# is therefore the recurring main-thread boundary needed by the probe.
+break *0x625653
 condition 2 (*(unsigned char*)0xa3a9f8 != 0 && *(unsigned char*)0xa15c50 != 0)
 commands
   silent

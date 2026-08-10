@@ -96,6 +96,11 @@ def main() -> int:
     parser.add_argument("--orders-dir", type=Path)
     parser.add_argument("--capture-prefix")
     parser.add_argument("--loaded-name")
+    parser.add_argument(
+        "--one-process-per-turn",
+        action="store_true",
+        help="chain reliable one-turn native workers instead of one long worker",
+    )
     parser.add_argument("--save-root", type=Path, default=inject_drive.SAVE_ROOT)
     parser.add_argument("--game", type=Path, default=inject_drive.GAME)
     parser.add_argument("--probe", type=Path, default=inject_drive.PROBE)
@@ -138,6 +143,33 @@ def main() -> int:
     print(f"save_root={args.save_root}")
 
     try:
+        if args.one_process_per_turn:
+            current_load_name = args.load_name
+            for current_turn, spec in enumerate(specs, start=1):
+                segment_prefix = f"{prefix}_step{current_turn}"
+                loaded_name = _fresh_name(f"{segment_prefix}_loaded")
+                after_turn_name = _fresh_name(f"{segment_prefix}_after")
+                edited_name = _fresh_name(f"{segment_prefix}_edited")
+                result = inject_drive.run(
+                    load_name=current_load_name,
+                    loaded_name=loaded_name,
+                    after_turn_name=after_turn_name,
+                    edited_name=edited_name,
+                    edit_node=None,
+                    edit_value=None,
+                    turn_mode="sync",
+                    skip_turn=False,
+                    timeout=args.timeout,
+                    capture_specs=[spec],
+                    capture_prefix=segment_prefix,
+                    game=args.game,
+                    probe=args.probe,
+                    save_root=args.save_root,
+                )
+                if result != 0:
+                    return result
+                current_load_name = f"{segment_prefix}_turn1"
+            return 0
         return inject_drive.run(
             load_name=args.load_name,
             loaded_name=loaded_name,
