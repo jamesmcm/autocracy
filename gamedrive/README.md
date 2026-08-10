@@ -323,6 +323,35 @@ at about 4,341 income and 27,819 expenditure around the policy/ring transition.
 Those remaining gaps are tracked as effect-ring and native manager boundaries,
 not hidden calibration of a single final checkpoint.
 
+### Fresh intervention rollout
+
+To exercise the complete path again, a fresh native rollout was generated with
+the captured intervention sequence and a new output prefix:
+
+```bash
+PYTHONPATH=. uv run python gamedrive/term_capture.py \
+  --country uk --load-name turn0_initial \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --orders-dir parity_cases/dem3saves \
+  --one-process-per-turn \
+  --capture-prefix autocracy_uk_policy_rollout_fresh_20260810 --timeout 90
+
+PYTHONPATH=. uv run python gamedrive/term_audit.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix autocracy_uk_policy_rollout_fresh_20260810 --turns 24 \
+  --orders-dir parity_cases/dem3saves
+```
+
+The rollout applied 14 native policy actions across turns 1–12: tax-slider
+changes, CCTVCameras, StateHousing, PollutionControls, PropertyTax,
+PrivatePrisons, SalesTax, AlcoholTax, TobaccoTax, StateHealthService,
+CarbonTax, and ChildBenefit interventions. All 24 outputs passed native
+validation, and the audit reported zero policy-target differences on every
+checkpoint. The parsed state matches the earlier policy-chain corpus; raw XML
+differs only in the native save timestamp header, so this is a clean repeat of
+the full native-to-simulator verification path.
+
 ## Current limitations and safety boundaries
 
 The load flow is driven by the game's own asynchronous path
