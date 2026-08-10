@@ -257,6 +257,13 @@ reported as observations: live party membership, activist counts, income-host
 links, and some poll modifiers are rebuilt in memory by the native manager and
 are not serialized into the save.
 
+The simulator's native replay path applies each turn's complete orders save as
+one batch. Its debt preview consumes the previous policy-history level; a new
+policy uses the midpoint history seed and a live multiplier, while completed
+save totals continue to use live current policy values. Direct interactive
+simulator actions retain the delayed current/target model unless
+`native_order_runtime=True` is requested explicitly.
+
 `--turn-mode sync` is the reliable default. `--turn-mode async` (or the legacy
 `--gameplay-turn`) remains available for experiments, but the GUI launcher is
 ptrace-sensitive. `--turn-mode direct` calls the simulation entrypoint without
@@ -319,7 +326,7 @@ in every deterministic replay.
 
 After the long-run fixes, the largest quiet-chain absolute finance residuals
 are about 1,737 income and 1,839 expenditure; the order-chain residuals peak
-at about 4,341 income and 27,819 expenditure around the policy/ring transition.
+at about 1,084 income and 2,053 expenditure around the policy/ring transition.
 Those remaining gaps are tracked as effect-ring and native manager boundaries,
 not hidden calibration of a single final checkpoint.
 

@@ -31,6 +31,10 @@ class SimulationConfig:
     # in saves.  Keep it opt-in so a deterministic replay can model loyalty
     # without silently choosing a different minister roster.
     minister_resignations: bool = False
+    # Native gamedrive order replays serialize SetSlider's immediate current
+    # value and apply implementation scaling to newly introduced effect-ring
+    # samples. Interactive simulator actions keep the abstract delayed model.
+    native_order_runtime: bool = False
 
 
 @dataclass(slots=True)
@@ -229,6 +233,11 @@ class SimulationState:
     # game's Policy::NextTurn step for save/parity work.
     policy_cost_histories: Dict[str, List[float]] = field(default_factory=dict)
     policy_income_histories: Dict[str, List[float]] = field(default_factory=dict)
+    # Native finance evaluates the policy-history sample immediately behind
+    # the current slider value.  Interactive callers do not need this
+    # bookkeeping, but native order replay carries the level explicitly
+    # between the order phase and the following turn.
+    policy_finance_levels: Dict[str, float] = field(default_factory=dict)
     total_expenditure: float = 0.0
     total_income: float = 0.0
     global_economy_position: float = 0.0

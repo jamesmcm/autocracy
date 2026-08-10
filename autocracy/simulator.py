@@ -617,6 +617,7 @@ def get_initial_state(
         policies=policies,
         political_capital=political_capital,
         effects={},
+        policy_finance_levels=policies.copy(),
         political_capital_income=starting_capital,
         global_economy_position=setup.economic_cycle_start,
     )
@@ -658,6 +659,7 @@ def get_initial_state(
         # next debt roll uses the game's displayed net.
         state.total_income = save.total_income
         state.total_expenditure = save.total_expenditure
+    state.policy_finance_levels = state.policies.copy()
     return state, graph
 
 
@@ -1639,6 +1641,8 @@ def _advance_state_values(
     graph: nx.DiGraph,
     data: SimulationData,
     source_policies: Optional[Dict[str, float]] = None,
+    *,
+    native_order_runtime: bool = False,
 ) -> tuple[
     Dict[str, float],
     Dict[str, float],
@@ -1832,9 +1836,20 @@ def _advance_state_values(
         if effect.inertia:
             history = history_by_id.get(effect.effect_id)
             if history is not None:
+                history_sample = raw_value
+                if native_order_runtime and effect.source in state.policies:
+                    implementation = state.policy_implementations.get(
+                        effect.source, 1.0
+                    )
+                    if implementation < 1.0 - EPSILON:
+                        # Native saves retain implementation-scaled samples
+                        # for newly introduced policy rings (CarbonTax writes
+                        # -0.25 at implementation .5), while settled slider
+                        # rings retain their raw expression samples.
+                        history_sample *= implementation
                 if should_shift(effect):
                     previous_values = list(history.values)
-                    history.values = [raw_value] + history.values[:-1]
+                    history.values = [history_sample] + history.values[:-1]
                     window = max(1, int(effect.inertia))
                     current_value = sum(previous_values[:window]) / window
                 else:
@@ -2357,6 +2372,7 @@ def _finance_totals(
     income_scalars: Dict[str, float],
     cost_scalars: Dict[str, float],
     interest_rate: float,
+    policy_levels: Optional[Dict[str, float]] = None,
 ) -> SimulationState:
     """Compute the policy finance lines and the <finances>-block totals.
 
@@ -2373,9 +2389,10 @@ def _finance_totals(
     cost_scalar_by_policy: Dict[str, float] = {}
     total_cost = 0.0
     total_income = 0.0
+    levels = policy_levels if policy_levels is not None else state.policies
     for policy in data.policies.values():
         name = policy.name
-        level = state.policies.get(name, 0.0)
+        level = levels.get(name, state.policies.get(name, 0.0))
         active = state.policy_active.get(name, level > EPSILON)
         income_scalar_by_policy[name] = income_scalars.get(policy.department, 1.0)
         cost_scalar_by_policy[name] = cost_scalars.get(policy.department, 1.0)
@@ -2469,6 +2486,64 @@ def _recompute_orders_finance(
         income_scalars=_scalars_by_department(state.policy_income_scalars, data),
         cost_scalars=_scalars_by_department(state.policy_cost_scalars, data),
         interest_rate=rate,
+    )
+
+
+def _recompute_native_order_finance(
+    state: SimulationState,
+    data: SimulationData,
+    policy_levels: Dict[str, float],
+    introduced_policies: Iterable[str],
+) -> SimulationState:
+    """Recompute the native order-phase budget preview.
+
+    ``SIM_Policy::SetSlider`` updates the visible value immediately, but the
+    finance manager consumes the previous policy-history sample for the
+    upcoming debt roll.  Existing policies retain their serialized finance
+    multipliers; a policy introduced in this order batch has no stored
+    multiplier yet, so its multiplier is evaluated from the current node
+    snapshot.  The implementation scalar is still the pre-turn minister
+    scalar.
+    """
+
+    context = {
+        **state.values,
+        **state.policies,
+        **state.situations,
+        **state.voter_values,
+        **state.voter_percentages,
+        **state.voter_frequencies,
+    }
+    income_multipliers = state.policy_income_multipliers.copy()
+    cost_multipliers = state.policy_cost_multipliers.copy()
+    for name in introduced_policies:
+        policy = data.policies.get(name)
+        if policy is None:
+            continue
+        level = policy_levels.get(name, state.policies.get(name, 0.0))
+        if policy.max_income > 0:
+            income_multipliers[name] = _live_multiplier(
+                policy.income_multipliers, level, context
+            )
+        if policy.max_cost > 0:
+            cost_multipliers[name] = _live_multiplier(
+                policy.cost_multipliers, level, context
+            )
+
+    rate = state.interest_rate or _interest_rate(
+        state.credit_rating,
+        data,
+        state.values.get("_global_interest_rates_", 0.5),
+    )
+    return _finance_totals(
+        state,
+        data,
+        income_multipliers=income_multipliers,
+        cost_multipliers=cost_multipliers,
+        income_scalars=_scalars_by_department(state.policy_income_scalars, data),
+        cost_scalars=_scalars_by_department(state.policy_cost_scalars, data),
+        interest_rate=rate,
+        policy_levels=policy_levels,
     )
 
 
@@ -2640,6 +2715,7 @@ def process_end_of_turn(
         graph,
         data,
         source_policies=source_policies,
+        native_order_runtime=(config.native_order_runtime if config else False),
     )
     # Ministers gain experience each turn (drifting the income/cost scalars)
     # and -- when the loyalty subsystem is enabled -- their satisfaction and
@@ -2719,6 +2795,7 @@ def process_end_of_turn(
         response_factors=runtime_state.response_factors.copy(),
         policy_cost_histories=policy_cost_histories,
         policy_income_histories=policy_income_histories,
+        policy_finance_levels=runtime_state.policy_finance_levels.copy(),
         global_economy_position=global_position,
         hidden_histories={
             name: [new_values[name], *values[:32]]
@@ -2785,6 +2862,11 @@ def process_end_of_turn(
     _recompute_live_finance(
         new_state, data, multiplier_context=multiplier_context
     )
+    if config is not None and config.native_order_runtime:
+        # The current policy-neuron values become the previous-history sample
+        # for the next native order phase.  The displayed totals above use
+        # the live current values; only the following debt preview is delayed.
+        new_state.policy_finance_levels = new_state.policies.copy()
     return _run_stochastic_systems(new_state, graph, data, config)
 
 
@@ -2820,9 +2902,25 @@ def apply_actions(
     state: SimulationState,
     actions: Iterable[PolicyAction],
     data: Optional[SimulationData] = None,
+    *,
+    native_order_runtime: bool = False,
 ) -> SimulationState:
+    """Apply policy orders without advancing the simulation.
+
+    ``native_order_runtime`` models the direct ``SIM_Policy::SetSlider`` path
+    used by the native gamedrive injector: the saved current policy value and
+    output throttle jump to the requested target before the next turn. The
+    default keeps the public interactive model's current-versus-target split,
+    where implementation advances during ``process_end_of_turn``.
+    """
     data = data or load_simulation_data()
     policies = state.policies.copy()
+    finance_policy_values = (
+        state.policy_finance_levels.copy()
+        if state.policy_finance_levels
+        else state.policies.copy()
+    )
+    introduced_policies: set[str] = set()
     policy_desired_throttles = state.policy_desired_throttles.copy()
     target_levels = policy_desired_throttles.copy()
     policy_active = state.policy_active.copy()
@@ -2878,6 +2976,15 @@ def apply_actions(
             # implementation fraction then ramps up.  The inertial effect
             # rings still lag, so downstream nodes ramp gradually.
             policies[policy.name] = new_level
+            # A newly introduced policy seeds its native policy history with
+            # the midpoint sample; the first finance pass consumes that
+            # sample while the visible slider already shows the target.
+            finance_policy_values[policy.name] = (
+                _default_slider_level(slider)
+                if native_order_runtime
+                else new_level
+            )
+            introduced_policies.add(policy.name)
             effect_throttles[policy.name] = new_level
             policy_active[policy.name] = True
             policy_implementations[policy.name] = 0.0
@@ -2888,6 +2995,13 @@ def apply_actions(
             policy_active[policy.name] = False
         else:
             policy_active[policy.name] = True
+            if native_order_runtime:
+                # The injector calls SIM_Policy::SetSlider directly. Native
+                # XML then serializes the requested slider as both the current
+                # policy value and output throttle, while inertial rings keep
+                # their own one-pass order delay below.
+                policies[policy.name] = new_level
+                effect_throttles[policy.name] = new_level
             # Native policy effects retain the old ring for the first turn
             # after a raise/lower order, then follow the implementation ramp.
             policy_effect_history_delays[policy.name] = 1
@@ -2906,6 +3020,15 @@ def apply_actions(
         situations=state.situations.copy(),
         active_situations=state.active_situations.copy(),
         response_factors=state.response_factors.copy(),
+        policy_costs=state.policy_costs.copy(),
+        policy_incomes=state.policy_incomes.copy(),
+        total_expenditure=state.total_expenditure,
+        total_income=state.total_income,
+        policy_finance_levels=(
+            finance_policy_values
+            if native_order_runtime
+            else policies.copy()
+        ),
         policy_cost_histories={
             name: list(values)
             for name, values in state.policy_cost_histories.items()
@@ -2953,10 +3076,20 @@ def apply_actions(
         turns_since_credit=state.turns_since_credit,
         interest_rate=state.interest_rate,
     )
-    # Placing orders immediately recomputes the finance lines (the game does
-    # this when the player confirms the orders), so the net rolled into the
-    # debt at the next turn reflects the post-orders active policy set.
-    _recompute_orders_finance(new_state, data)
+    # The interactive model exposes the game's post-order budget preview. The
+    # native gamedrive path uses the previous policy-history sample for the
+    # debt roll, while the visible current value is already at the target.
+    if native_order_runtime:
+        _recompute_native_order_finance(
+            new_state,
+            data,
+            finance_policy_values,
+            introduced_policies,
+        )
+        # ``_recompute_native_order_finance`` mutates the order state in place;
+        # retain the current/target split for the following NextTurn call.
+    else:
+        _recompute_orders_finance(new_state, data)
     return new_state
 
 
@@ -3061,6 +3194,7 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "policy_incomes": state.policy_incomes,
         "policy_cost_histories": state.policy_cost_histories,
         "policy_income_histories": state.policy_income_histories,
+        "policy_finance_levels": state.policy_finance_levels,
         "total_expenditure": state.total_expenditure,
         "total_income": state.total_income,
         "global_economy_position": state.global_economy_position,
@@ -3163,6 +3297,12 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         policy_income_histories={
             k: [float(value) for value in values]
             for k, values in dict(payload.get("policy_income_histories", {})).items()
+        },
+        policy_finance_levels={
+            k: float(v)
+            for k, v in dict(
+                payload.get("policy_finance_levels", payload["policies"])
+            ).items()
         },
         total_expenditure=float(payload.get("total_expenditure", 0.0)),
         total_income=float(payload.get("total_income", 0.0)),

@@ -138,6 +138,12 @@ native resignation roll is not serialized. Remaining residuals are chiefly
 effect-ring state, the global-economy random cursor, and live party/poll
 manager lists that the game rebuilds in memory rather than saving.
 
+Captured order saves are replayed as one native order batch. The order-phase
+finance preview consumes the previous policy-history sample, while a newly
+introduced policy starts from its midpoint history sample. This keeps the
+24-turn intervention-chain policy targets exact and reduces its peak finance
+residual to about 1,084 income / 2,053 expenditure.
+
 ### Stochastic systems
 
 Random events, dilemmas, pressure-group events and extremist
@@ -191,12 +197,12 @@ bootstrap a simulation from an in-game snapshot.
   separate manager-owned sections and remain less exact than the ordinary DAG.
 - Finance is live-recomputed, including debt interest and the global-interest
   neuron; save parsing also preserves each policy's 20-entry cost/income
-  history ring. The drastic replay's aligned final residual is about -1,490
-  income / +88 expenditure under the current pre-policy effect sampling. The
-  24-turn audit now also models the native no-minister competence fallback
-  (`0.25`) and reports peak absolute residuals of about 1,737 income / 1,839
-  expenditure for the quiet chain and 4,341 income / 27,819 expenditure for
-  the policy chain, with the latter concentrated around policy ring changes.
+  history ring. The 24-turn audit models the native no-minister competence
+  fallback (`0.25`) and, with deterministic resignations enabled for the
+  quiet chain, reports peak residuals of about 1,737 income / 1,839
+  expenditure there and 1,084 income / 2,053 expenditure for the captured
+  policy chain. The remaining finance error is concentrated around native
+  policy/effect-ring state changes.
 - The remaining continuous-state residuals are concentrated in outgoing
   effect-ring throttle/load state (including the post-order StateHealth ramp)
   and the non-serialized global-economy random cursor. The current model

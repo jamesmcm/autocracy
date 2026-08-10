@@ -9,7 +9,7 @@ It is therefore useful on hosts where the installed game cannot be launched.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -87,8 +87,15 @@ def replay_simulator(
     turns: int | None = None,
     data: SimulationData | None = None,
     config: SimulationConfig | None = None,
+    native_order_runtime: bool = True,
 ) -> dict[int, SimulationState]:
-    """Replay captured orders, optionally continuing through no-order turns."""
+    """Replay captured orders, optionally continuing through no-order turns.
+
+    Native captures use ``SIM_Policy::SetSlider`` before ``NextTurn``. The
+    default therefore applies native current-value/throttle semantics while
+    retaining the simulator's delayed runtime for direct interactive calls.
+    Set ``native_order_runtime=False`` for the older abstract action model.
+    """
     order_paths = _order_paths(orders_paths)
     if turns is not None and turns < 1:
         raise ValueError("turn count must be positive")
@@ -96,7 +103,10 @@ def replay_simulator(
         raise ValueError("turns is required when no orders saves are supplied")
     simulation_data = data or simulator.load_simulation_data()
     state, graph = load_state_from_savegame(initial_path, simulation_data)
-    replay_config = config or SimulationConfig(minister_loyalty=True)
+    replay_config = replace(
+        config or SimulationConfig(minister_loyalty=True),
+        native_order_runtime=native_order_runtime,
+    )
     by_turn = {turn_number(path): path for path in order_paths}
     capture_turns = turns if turns is not None else max(by_turn) + 1
     if by_turn and capture_turns <= max(by_turn):
@@ -110,10 +120,27 @@ def replay_simulator(
             source_path = _source_for_orders(orders_path, previous_orders)
             before = parse_savegame(source_path)
             after = parse_savegame(orders_path)
-            for action in _simulator_actions(before, after, state):
-                state = simulator.apply_actions(
-                    state, [action], data=simulation_data
-                )
+            actions = _simulator_actions(before, after, state)
+            if native_order_runtime:
+                # The injector applies the complete order save before calling
+                # NextTurn.  Keep one finance preview for the whole batch so
+                # slider moves do not successively become inputs to the next
+                # order's preview.
+                if actions:
+                    state = simulator.apply_actions(
+                        state,
+                        actions,
+                        data=simulation_data,
+                        native_order_runtime=True,
+                    )
+            else:
+                for action in actions:
+                    state = simulator.apply_actions(
+                        state,
+                        [action],
+                        data=simulation_data,
+                        native_order_runtime=False,
+                    )
             previous_orders = orders_path
         state = simulator.process_end_of_turn(
             state, graph, simulation_data, config=replay_config

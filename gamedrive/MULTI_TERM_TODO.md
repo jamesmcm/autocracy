@@ -54,3 +54,20 @@ and the order-chain expenditure residual after policy changes.
 Acceptance requires complete native XML with monotonic serialized turns 1–24,
 an unchanged source save, an offline simulator comparison for every checkpoint,
 and focused tests that pass without the installed game.
+
+## Follow-up order-runtime parity record
+
+- [x] Generate a fresh 24-turn policy-intervention chain containing slider
+      changes, a cancellation, and new policy introductions.
+- [x] Replay captured orders as one native order batch rather than recalculating
+      the debt preview after each individual action.
+- [x] Model the native previous-policy-history finance sample and midpoint
+      seed for newly introduced policies.
+- [x] Add regression coverage for native batch previews and introductions.
+
+The fresh intervention chain is stored outside the repository as
+`autocracy_uk_policy_rollout_fresh_20260810_step{1..24}_turn1.xml`. The current
+offline audit keeps policy targets exact and reduces the order-chain finance
+residual to at most about 1,084 income and 2,053 expenditure across the 24
+turns. Remaining continuous-state gaps are concentrated in native
+effect-ring/load state and manager-owned voter and party data.

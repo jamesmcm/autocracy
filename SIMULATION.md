@@ -95,6 +95,14 @@ Common behavioural patterns handled correctly:
    - Capital is deducted per accepted action; the finance lines are
      recalculated against the post-orders active policy set (the game
      recomputes them when the player confirms the orders).
+   - Native `gamedrive` replays opt into `native_order_runtime`: a complete
+     order save is applied as one batch, the visible policy value and input
+     throttle jump to the requested target, and the next debt roll consumes
+     the previous policy-history level. Existing policies retain their
+     serialized finance multipliers; a newly introduced policy seeds a
+     midpoint history sample and evaluates its new multiplier from the
+     current node snapshot. Direct interactive calls retain the delayed
+     current-versus-target behavior by default.
 
 3. **End of Turn** (`process_end_of_turn`):
    - Advance ministers first, then policy runtime: minister experience/effectiveness is updated before policy implementation fractions, while current policy values and their policy-input throttles move toward requested targets by the fixed `1 / implementation_time` step. The action-phase policy map therefore remains the current `<val>` until this phase.
@@ -125,9 +133,12 @@ Common behavioural patterns handled correctly:
     - Recompute the finance lines from the advanced policy values and the
       advanced ministerial scalars, with the multiplier neurons evaluated at
       the previous turn's nodes and the debt interest charged on the
-      freshly-rolled debt. A department without an active minister uses the
-      data-driven `minister_fallback.competence` (the captured UK value is
-      `0.25`, yielding earn/cost scalars `0.9375`/`1.0625`).
+      freshly-rolled debt. Native order replay uses its delayed
+      policy-history sample only for the debt preview; the completed save's
+      displayed totals remain live values. A department without an active
+      minister uses the data-driven `minister_fallback.competence` (the
+      captured UK value is `0.25`, yielding earn/cost scalars
+      `0.9375`/`1.0625`).
 
 4. **Random Systems** (`SimulationConfig`):
    - `process_events`, `process_dilemmas`, `process_attacks` and the

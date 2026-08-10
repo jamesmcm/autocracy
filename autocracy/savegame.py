@@ -634,6 +634,7 @@ def state_from_savegame(
         if name in state.policies:
             state.policies[name] = max(0.0, min(1.0, value))
     state.policy_desired_throttles = save.policy_desired_throttles.copy()
+    state.policy_finance_levels = state.policies.copy()
     for name, value in save.hidden_values.items():
         state.values[name] = value
     state.hidden_histories = {

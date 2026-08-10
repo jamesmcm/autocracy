@@ -618,3 +618,23 @@ voter incomes 0.006777, and situation latents 0.076046 (`GeneralStrike`).
 These larger voter/situation differences are the party-list, approval, and
 non-serialized runtime-state boundary; they are not omitted from the audit by
 the ordinary-node summary above.
+
+### Native order-batch finance preview (2026-08-10)
+
+The fresh 24-turn intervention capture
+(`autocracy_uk_policy_rollout_fresh_20260810_step{1..24}_turn1.xml`) exposed a
+second finance boundary that is invisible in an individual interactive action.
+The injector applies every order in a turn before `NextTurn`; replaying the
+actions one at a time incorrectly made each slider move the next order's debt
+preview input. The native preview instead uses the previous policy-history
+level, keeps stored multipliers for existing policies, and seeds an introduced
+policy's previous level from the midpoint sample. A new policy's multiplier is
+evaluated from the current node snapshot.
+
+The replay now batches each captured order save under `native_order_runtime`.
+The direct current/target and throttle fields remain native-exact, while the
+24-turn order-chain finance residual falls to at most approximately 1,084
+income and 2,053 expenditure. The completed save still recomputes displayed
+totals from live current policy values; only the upcoming debt preview uses the
+delayed finance level. Focused tests cover both the multi-slider batch and a
+new policy introduction.

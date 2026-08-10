@@ -19,6 +19,7 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.policies == state.policies
     assert restored.policy_desired_throttles == state.policy_desired_throttles
     assert restored.policy_income_histories == state.policy_income_histories
+    assert restored.policy_finance_levels == state.policy_finance_levels
     assert restored.policy_cost_histories == state.policy_cost_histories
     assert restored.policy_effect_history_started == state.policy_effect_history_started
     assert restored.political_capital_income == state.political_capital_income
@@ -69,6 +70,67 @@ def test_policy_slider_change_uses_fixed_step_output_throttle():
     )
     assert advanced.effect_throttles[policy.name] == pytest.approx(expected)
     assert advanced.policies[policy.name] == pytest.approx(expected)
+
+
+def test_native_order_runtime_sets_slider_value_before_next_turn():
+    data = simulator.load_simulation_data()
+    state, _ = simulator.get_initial_state("uk")
+    updated = simulator.apply_actions(
+        state,
+        [
+            PolicyAction(
+                policy_name="StateHealthService",
+                delta=-state.policies["StateHealthService"],
+                action_type="lower",
+            )
+        ],
+        data=data,
+        native_order_runtime=True,
+    )
+
+    assert updated.policies["StateHealthService"] == pytest.approx(0.0)
+    assert updated.effect_throttles["StateHealthService"] == pytest.approx(0.0)
+    assert updated.policy_desired_throttles["StateHealthService"] == pytest.approx(
+        0.0
+    )
+
+
+def test_native_order_batch_keeps_previous_finance_levels_for_debt_preview():
+    data = simulator.load_simulation_data()
+    state, _ = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    actions = [
+        PolicyAction("CorporationTax", -0.22, action_type="lower"),
+        PolicyAction("IncomeTax", -0.45, action_type="lower"),
+        PolicyAction("Prisons", -0.5, action_type="lower"),
+    ]
+
+    updated = simulator.apply_actions(
+        state, actions, data=data, native_order_runtime=True
+    )
+
+    assert updated.total_income == pytest.approx(state.total_income)
+    assert updated.total_expenditure == pytest.approx(state.total_expenditure)
+    assert updated.policy_finance_levels["CorporationTax"] == pytest.approx(0.22)
+    assert updated.policy_finance_levels["IncomeTax"] == pytest.approx(0.45)
+
+
+def test_native_introduction_seeds_previous_finance_level():
+    data = simulator.load_simulation_data()
+    state, _ = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+
+    updated = simulator.apply_actions(
+        state,
+        [PolicyAction("PrivatePrisons", 1.0, action_type="introduce")],
+        data=data,
+        native_order_runtime=True,
+    )
+
+    assert updated.policies["PrivatePrisons"] == pytest.approx(1.0)
+    assert updated.policy_finance_levels["PrivatePrisons"] == pytest.approx(0.5)
 
 
 def test_policy_introduction_exposes_effects_during_implementation():
