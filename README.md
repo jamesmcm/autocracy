@@ -208,6 +208,9 @@ bootstrap a simulation from an in-game snapshot.
   Compare it offline with `gamedrive/capture.py`; see
   [`gamedrive/README.md`](gamedrive/README.md) for fresh-output validation,
   manager census, and the memory-editing boundary.
+- Use `gamedrive/term_capture.py --country uk` for the configured 16-turn UK
+  term plus eight extra turns; its `--orders-dir` mode appends a no-order tail
+  to an existing action sequence for long-run parity analysis.
 - Keep raw native output saves outside the repository and use fresh save names;
   the installed binary is version-pinned to Democracy 3 v1.30.2.
 - Keep raw proprietary saves outside the repository; commit only reviewable

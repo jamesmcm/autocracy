@@ -193,6 +193,25 @@ PYTHONPATH=. uv run python gamedrive/capture.py \
   --native-dir /home/gopostal/.local/share/democracy3/savegames \
   --native-prefix d3_probe_replay_run42 --turns 12
 
+# Generate a UK electoral term plus two extra years (24 no-order turns)
+PYTHONPATH=. uv run python gamedrive/term_capture.py \
+  --country uk --load-name turn0_initial \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --capture-prefix autocracy_uk_term_noorders_run42 --timeout 180
+
+# Generate the captured policy sequence, then twelve additional no-order turns
+PYTHONPATH=. uv run python gamedrive/term_capture.py \
+  --country uk --load-name turn0_initial \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --orders-dir parity_cases/dem3saves \
+  --capture-prefix autocracy_uk_term_orders_run42 --timeout 180
+
+# Compare a no-order term capture offline
+PYTHONPATH=. uv run python gamedrive/capture.py \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml --no-orders \
+  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-prefix autocracy_uk_term_noorders_run42 --turns 24
+
 # Load only, then edit one live neuron and persist a separate native save
 PYTHONPATH=. uv run python gamedrive/inject_drive.py --skip-turn \
   --load-name d3_probe_turn0_copy \
@@ -211,6 +230,12 @@ outputs by default, checks that each native XML has the v1.30.2 sections and a
 single final `</xml>`, and returns nonzero on a timeout or incomplete output.
 The game process is terminated by gdb, and the source capture is not modified.
 The `capture.py` comparison is offline and never launches the game.
+
+`term_capture.py` reads `term_length` from the selected mission. For UK that is
+16 turns; its default `--extra-turns 8` therefore produces 24 completed native
+saves. Supplying `--orders-dir` replays the available pre-turn order saves and
+pads the remaining term with explicit no-order turns. The source name is only
+read by the game; every loaded/capture output name is fresh and validated.
 
 `--turn-mode sync` is the reliable default. `--turn-mode async` (or the legacy
 `--gameplay-turn`) remains available for experiments, but the GUI launcher is

@@ -185,6 +185,12 @@ VALUE` performs an explicit, process-local write to the live neuron value slot
 and saves a separate edited copy. Always copy source captures to fresh names
 and keep raw outputs outside the repository.
 
+For long-run parity, `gamedrive/term_capture.py --country uk` reads the UK's
+16-turn mission term and, by default, captures eight additional turns (24
+completed saves). It can replay the existing captured orders and pad their tail
+with no-order turns. The offline comparator accepts `--no-orders --turns 24`
+for a clean baseline sequence.
+
 The direct boundary gives a same-input oracle: loading `turn0_initial.xml`
 reproduced the parser's extracted load snapshot exactly. A no-order native
 turn matched simulator finance, policies, and effect throttles exactly; across

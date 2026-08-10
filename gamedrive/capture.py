@@ -84,21 +84,27 @@ def replay_simulator(
     initial_path: str | Path,
     orders_paths: Sequence[str | Path],
     *,
+    turns: int | None = None,
     data: SimulationData | None = None,
     config: SimulationConfig | None = None,
 ) -> dict[int, SimulationState]:
-    """Replay every captured turn, including omitted no-order turns."""
+    """Replay captured orders, optionally continuing through no-order turns."""
     order_paths = _order_paths(orders_paths)
-    if not order_paths:
-        raise ValueError("at least one orders save is required")
+    if turns is not None and turns < 1:
+        raise ValueError("turn count must be positive")
+    if not order_paths and turns is None:
+        raise ValueError("turns is required when no orders saves are supplied")
     simulation_data = data or simulator.load_simulation_data()
     state, graph = load_state_from_savegame(initial_path, simulation_data)
     replay_config = config or SimulationConfig(minister_loyalty=True)
     by_turn = {turn_number(path): path for path in order_paths}
+    capture_turns = turns if turns is not None else max(by_turn) + 1
+    if by_turn and capture_turns <= max(by_turn):
+        raise ValueError("turn count ends before the last orders save")
     previous_orders = Path(initial_path)
     snapshots: dict[int, SimulationState] = {}
 
-    for number in range(max(by_turn) + 1):
+    for number in range(capture_turns):
         orders_path = by_turn.get(number)
         if orders_path is not None:
             source_path = _source_for_orders(orders_path, previous_orders)
@@ -191,15 +197,31 @@ def _print_comparisons(comparisons: Sequence[CaptureComparison]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--initial-file", type=Path, required=True)
-    parser.add_argument("--orders-dir", type=Path, required=True)
+    orders_group = parser.add_mutually_exclusive_group()
+    orders_group.add_argument("--orders-dir", type=Path)
+    orders_group.add_argument(
+        "--no-orders",
+        action="store_true",
+        help="replay only no-order turns; pair with --turns",
+    )
     parser.add_argument("--native-file", action="append", type=Path)
     parser.add_argument("--native-dir", type=Path)
     parser.add_argument("--native-prefix")
     parser.add_argument("--turns", type=int)
     args = parser.parse_args()
 
-    order_files = sorted(args.orders_dir.glob("turn*_o*.xml"), key=turn_number)
-    snapshots = replay_simulator(args.initial_file, order_files)
+    order_files = (
+        []
+        if args.no_orders or args.orders_dir is None
+        else sorted(args.orders_dir.glob("turn*_o*.xml"), key=turn_number)
+    )
+    if args.no_orders and args.turns is None:
+        parser.error("--turns is required with --no-orders")
+    snapshots = replay_simulator(
+        args.initial_file,
+        order_files,
+        turns=args.turns,
+    )
     native_paths = list(args.native_file or ())
     if args.native_dir is not None and args.native_prefix is not None:
         if args.turns is None:
