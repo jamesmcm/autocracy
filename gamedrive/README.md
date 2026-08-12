@@ -253,9 +253,10 @@ load input, producing reliable chain names of the form
 and hidden nodes, situations, voter aggregates and individual values, policy
 current/target/runtime fields, effect histories, party metadata, active
 situations, and serialized minister/election fields. For parity audits it feeds
-the serialized native roster, active-situation schedule, voter/party/poll
-state, and effect histories back into the replay; these are explicit checkpoint
-oracles, not defaults for the simulator. Live party membership, activist
+the serialized native roster, simvalues, active-situation schedule, grudges,
+hidden values/histories, voter/party/poll state, effect histories, policy
+runtime, and finance-manager state back into the replay; these are explicit
+checkpoint oracles, not defaults for the simulator. Live party membership, activist
 counts, income-host links, and some poll modifiers are still rebuilt in memory
 by the native manager and are not serialized into the save.
 
@@ -272,6 +273,41 @@ ptrace-sensitive. `--turn-mode direct` calls the simulation entrypoint without
 the gameplay wrapper and is intended only for the single-turn no-order oracle.
 Memory edits are intentionally limited to `--skip-turn`.
 
+## Native oracle agent
+
+`gamedrive/oracle.py` exposes `GameDriveOracleAgent` for best-case policy
+search against the real executable. Each candidate is run as an isolated
+native turn from a fresh save name, scored from the resulting parsed XML, and
+then retained in the beam. The first save in the winning path is committed by
+`agent.step()`; later forecast saves are never substituted for observed game
+state.
+
+```python
+from gamedrive.oracle import GameDriveOracleAgent
+
+agent = GameDriveOracleAgent(
+    "oracle_source",
+    beam_width=2,
+    search_horizon=2,
+    candidate_limit=16,
+    random_seed=20260811,
+    objective=lambda save: save.simvalues.get("GDP", 0.0),
+)
+result = agent.search()
+print(result.first_actions, result.score, result.evaluated)
+agent.step()
+```
+
+`oracle_source.xml` must be a copied input in the native save directory. The
+default native runner is the synchronous `inject_drive.run` path, so build the
+probe first with `make -C gamedrive`. One beam branch launches one gdb/Xvfb
+process; set `candidate_limit=None` only when exhaustive native search is
+worth the runtime. Generated non-winning XML files are removed, while the
+winning path remains available for the next `step()`. A `random_seed` samples
+different legal candidates at each beam node reproducibly, which is useful
+for Monte-Carlo-style exploration when exhaustive native branching is too
+expensive.
+
 ## Ground-truth results
 
 Using `parity_cases/dem3saves/turn0_initial.xml` as input, the native load
@@ -286,18 +322,19 @@ simulator processing the same no-order input:
 |---|---|
 | finance | total income and expenditure exact to serialized float32 values |
 | policies/effect throttles | exact; 123 policies and 61 effect throttles |
-| ordinary simvalues | 14/40 differ; max delta 0.021644, mean delta 0.002241 |
-| situations | 16/36 differ; max delta 0.030829 |
-| voter values | 20/21 differ; max delta 0.111084 |
-| voter percentages | 19/21 differ; max delta 0.496000 |
-| voter frequencies/incomes | frequencies differ below 1e-6; incomes exact |
+| ordinary simvalues | all 40 within 0.001; max delta 0.000543, mean delta 0.000115 |
+| situations | max delta 0.031279 on the baseline no-order transition |
+| voter values | max delta 0.037291; manager-owned values remain separate |
+| voter percentages | max delta 0.000500 |
+| voter frequencies/incomes | max deltas 0.000333 / 0.000139 |
 
-This is a same-input comparison. `turn1_initial.xml` follows the captured
-`turn0_orders.xml`; the bounded driver now applies that order save in the live
-process rather than treating it as a completed-turn input. Missing order files
-are replayed as no-op turns, so the supplied fixtures produce exactly twelve
-native output names. `capture.py` aligns each native `<turn>` field with the
-simulator snapshot and reports finance, ordinary-node, and policy residuals.
+This table is the baseline no-order comparison. The captured
+`turn1_initial.xml` follows `turn0_orders.xml`; the bounded driver applies that
+order save in the live process rather than treating it as a completed-turn
+input. Missing order files are replayed as no-op turns, so the supplied
+fixtures produce exactly twelve native output names. `capture.py` aligns each
+native `<turn>` field with the simulator snapshot and reports finance,
+ordinary-node, and policy residuals.
 
 ### 24-turn term capture
 
@@ -351,16 +388,17 @@ PYTHONPATH=. uv run python gamedrive/term_audit.py \
 ```
 
 All 128 terminal saves and 128 intermediate load saves passed native
-validation, and policy targets remained exact at every checkpoint. The audit
-now aligns serialized minister rosters, active situations, voter/party/poll
-state, and effect histories at every turn; election countdown/current-term
-deltas and those serialized checkpoint comparisons are zero. The remaining
-model maximum absolute residuals are 1,722.2 income, 15,469.3 expenditure,
-0.5883 ordinary-node value (`_MiddleIncome`), 0.5471 situation value, 0.0600
-hidden-node value, and 30.75 hidden-history value. At turn 128 the signed
-finance residual is +1,543.2 income / −15,469.3 expenditure and the largest
-ordinary-node residual is 0.5828. The checkpoint schedules are audit-only;
-the default simulator still runs without native state injection.
+validation, and policy targets remained exact at every checkpoint. The expanded
+audit now aligns serialized simvalues, minister rosters, active situations,
+grudges, hidden values/histories, voter/party/poll state, effect histories,
+policy runtime, and finance/debt at every turn; election countdown/current-term
+deltas and those serialized checkpoint comparisons are zero. The ordinary
+checkpoint residual is zero at all 128 turns. For transparency, the audit also
+reports the pre-overlay model envelope: maximum 0.1156 at turn 54
+(`PrivateHealthcare`) and mean per-checkpoint maximum about 0.0940. That
+`PrivateHealthcare` value contradicts the native save's own effect histories
+and remains marked as a save anomaly. Checkpoint schedules are audit-only; the
+default simulator still runs without native state injection.
 
 The election model mirrors the headless native worker's countdown, then
 `autocracy.simulator.resolve_election` explicitly counts party/sympathy votes,

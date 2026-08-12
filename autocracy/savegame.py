@@ -11,6 +11,7 @@ import networkx as nx
 from . import simulator
 from .models import (
     EffectHistory,
+    Grudge,
     PartyState,
     SimulationData,
     SimulationState,
@@ -46,6 +47,7 @@ class SaveGame:
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
     voter_incomes: Dict[str, float] = field(default_factory=dict)
     voter_frequency_grudges: Dict[str, float] = field(default_factory=dict)
+    grudges: List[Grudge] = field(default_factory=list)
     voters: List[Voter] = field(default_factory=list)
     parties: Dict[str, PartyState] = field(default_factory=dict)
     policy_implementations: Dict[str, float] = field(default_factory=dict)
@@ -422,6 +424,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
     voter_frequencies: Dict[str, float] = {}
     voter_incomes: Dict[str, float] = {}
     voter_frequency_grudges: Dict[str, float] = {}
+    grudges: List[Grudge] = []
     parties: Dict[str, PartyState] = {}
     parties_elem = root.find("parties")
     if parties_elem is not None:
@@ -467,14 +470,33 @@ def parse_savegame(path: str | Path) -> SaveGame:
     if grudges_elem is not None:
         for grudge in grudges_elem.findall("grudge"):
             target = (grudge.findtext("target") or "").strip()
-            if not target.endswith("_freq"):
-                continue
             try:
                 value = float(grudge.findtext("value", default="0"))
             except ValueError:
                 continue
-            voter_frequency_grudges[target] = (
-                voter_frequency_grudges.get(target, 0.0) + value
+            if target.endswith("_freq"):
+                voter_frequency_grudges[target] = (
+                    voter_frequency_grudges.get(target, 0.0) + value
+                )
+                continue
+            # The unnamed entries are individual voter-manager grudges.  They
+            # are already reflected in the serialized voter population and
+            # must not be reapplied to the aggregate voter-type neurons.
+            source = (grudge.findtext("name") or "").strip()
+            if not source:
+                continue
+            try:
+                decay = float(grudge.findtext("decay", default="1"))
+            except ValueError:
+                decay = 1.0
+            grudges.append(
+                Grudge(
+                    target=target,
+                    value=value,
+                    decay=decay,
+                    source=source,
+                    gui_name=(grudge.findtext("guiname") or "").strip(),
+                )
             )
     voters: List[Voter] = []
     voters_elem = root.find("voters")
@@ -624,6 +646,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         voter_frequencies=voter_frequencies,
         voter_incomes=voter_incomes,
         voter_frequency_grudges=voter_frequency_grudges,
+        grudges=grudges,
         voters=voters,
         parties=parties,
         policy_implementations=policy_implementations,
@@ -695,6 +718,16 @@ def state_from_savegame(
         state.voter_incomes[name] = value
         state.values[name] = value
     state.voter_frequency_grudges = save.voter_frequency_grudges.copy()
+    state.grudges = [
+        Grudge(
+            target=grudge.target,
+            value=grudge.value,
+            decay=grudge.decay,
+            source=grudge.source,
+            gui_name=grudge.gui_name,
+        )
+        for grudge in save.grudges
+    ]
     state.voters = [
         replace(v, groups=dict(v.groups), organizations=list(v.organizations))
         for v in save.voters

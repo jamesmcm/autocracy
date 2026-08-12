@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .models import SimulationConfig, SimulationData, SimulationState
+from .models import Grudge, SimulationConfig, SimulationData, SimulationState
 from .simulator import DEFAULT_GAMEDATA, _clamp, evaluate_expression
 
 SCRIPT_CALL_RE = re.compile(r"(\w+)\s*\(([^)]*)\)")
@@ -291,11 +291,12 @@ def _apply_grudge(
     config: SimulationConfig,
     log: List[str],
 ) -> None:
-    """Apply one ``CreateGrudge(guiname, id, target, value, decay)`` call.
+    """Record one ``CreateGrudge(guiname, id, target, value, decay)`` call.
 
-    Grudges are modelled as one-shot opinion shifts: the value is added to
-    the target (clamped to the node range) instead of persisting a decaying
-    memory of the grudge.  ``_All_`` spreads the shift across every voter.
+    Native grudges are neural inputs with their own decay ring.  Recording the
+    input here lets the simulator apply it during the same turn's neural pass
+    and preserves it for later turns.  The old direct-value mutation made
+    event effects disappear as soon as the target neuron was recalculated.
     """
 
     if len(args) < 4:
@@ -305,30 +306,32 @@ def _apply_grudge(
         value = float(args[3])
     except (TypeError, ValueError):
         return
-    if target in {"_All_", "_all_"}:
-        for name in list(state.voter_values):
-            state.voter_values[name] = _clamp(state.voter_values[name] + value, -1.0, 1.0)
-            state.values[name] = state.voter_values[name]
-        log.append(f"grudge {target} {value:+.3f}")
+    try:
+        decay = float(args[4]) if len(args) > 4 else 1.0
+    except (TypeError, ValueError):
+        decay = 1.0
+    source = args[1] if len(args) > 1 else ""
+    gui_name = args[0] if args else ""
+    normalized_target = "_All_" if target == "_all_" else target
+    if normalized_target.endswith("_freq"):
+        # Frequency neurons retain the historical aggregate input path.  The
+        # ordinary grudge list intentionally excludes these records so the
+        # simulator does not add them twice.
+        state.voter_frequency_grudges[normalized_target] = (
+            state.voter_frequency_grudges.get(normalized_target, 0.0) + value
+        )
+        log.append(f"grudge {normalized_target} {value:+.3f}")
         return
-    kind = _voter_target(state, target)
-    if kind is not None:
-        if kind == "voter_frequencies":
-            # Native CreateGrudge creates an input to the nested frequency
-            # neuron. Keep that input separate from the current value so the
-            # next CalculateValue pass does not erase it or add it twice.
-            state.voter_frequency_grudges[target] = (
-                state.voter_frequency_grudges.get(target, 0.0) + value
-            )
-        current = getattr(state, kind)[target]
-        updated = _clamp(current + value, -1.0, 1.0)
-        getattr(state, kind)[target] = updated
-        state.values[target] = updated
-        log.append(f"grudge {target} {value:+.3f}")
-        return
-    if target in state.values:
-        state.values[target] = _clamp(state.values[target] + value, 0.0, 1.0)
-        log.append(f"grudge {target} {value:+.3f}")
+    state.grudges.append(
+        Grudge(
+            target=normalized_target,
+            value=value,
+            decay=decay,
+            source=source,
+            gui_name=gui_name,
+        )
+    )
+    log.append(f"grudge {normalized_target} {value:+.3f}")
 
 
 def _run_script_actions(

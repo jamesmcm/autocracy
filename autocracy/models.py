@@ -202,6 +202,23 @@ class Voter:
 
 
 @dataclass(slots=True)
+class Grudge:
+    """A persistent ``CreateGrudge`` input from the native simulation.
+
+    The executable stores grudges as independent neural inputs rather than
+    folding them into the target node's current value.  Keeping the source
+    and decay alongside the value matters when two events affect the same
+    target with different lifetimes.
+    """
+
+    target: str
+    value: float
+    decay: float = 1.0
+    source: str = ""
+    gui_name: str = ""
+
+
+@dataclass(slots=True)
 class PartyState:
     """Serialized party metadata and the game's short history rings."""
 
@@ -260,6 +277,9 @@ class SimulationState:
     # calculation starts from zero and adds the grudge alongside ordinary
     # effect inputs on every pass.
     voter_frequency_grudges: Dict[str, float] = field(default_factory=dict)
+    # Persistent non-frequency CreateGrudge inputs.  These are advanced by
+    # their individual decay factors before the next neural pass.
+    grudges: List[Grudge] = field(default_factory=list)
     # The individual voter population (loaded from the save), used to derive
     # the ``_LowIncome``/``_MiddleIncome``/``_HighIncome`` income nodes.
     voters: List[Voter] = field(default_factory=list)

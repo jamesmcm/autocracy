@@ -1,10 +1,13 @@
 """Audit long native chains against simulator snapshots.
 
 The native XML is the source of truth for serialized state.  The command-line
-audit can feed serialized checkpoint rosters, voter data, and effect histories
-back into the replay so residuals describe the simulator model rather than
-missing save fields.  The default simulator remains independent of those
-oracle schedules; live party/poll pointers are still not saved by the game.
+audit can feed serialized checkpoint rosters, simvalues, voter data, effect
+histories, hidden state, policy runtime, and finance state back into the replay
+so a continuation stays aligned even when the game omits a live cursor from
+XML.  It retains the pre-overlay model snapshot, so checkpoint closure does
+not hide ordinary-node residuals.  The default simulator remains independent
+of those oracle schedules; live party/poll pointers are still not saved by the
+game.
 """
 
 from __future__ import annotations
@@ -44,8 +47,16 @@ class TermAuditRow:
     turn: int
     income_delta: float
     expenditure_delta: float
+    debt_delta: float
+    interest_rate_delta: float
+    credit_rating_delta: int | None
+    turns_since_credit_delta: int | None
+    policy_finance_differences: int
+    grudge_max_delta: float
     ordinary_max_delta: float
     ordinary_max_name: str
+    ordinary_checkpoint_max_delta: float
+    ordinary_checkpoint_max_name: str
     situation_max_delta: float
     situation_max_name: str
     hidden_max_delta: float
@@ -179,6 +190,47 @@ def _history_max_delta(
     return maximum
 
 
+def _count_history_differences(
+    actual: Mapping[str, Sequence[float]],
+    expected: Mapping[str, Sequence[float]],
+    *,
+    tolerance: float = 1e-5,
+) -> int:
+    """Count policy rings whose serialized samples differ."""
+    differences = 0
+    for name, expected_values in expected.items():
+        actual_values = actual.get(name)
+        if actual_values is None or len(actual_values) != len(expected_values):
+            differences += 1
+            continue
+        if any(
+            abs(float(actual_value) - float(expected_value)) > tolerance
+            for actual_value, expected_value in zip(actual_values, expected_values)
+        ):
+            differences += 1
+    return differences
+
+
+def _grudge_max_delta(actual: Sequence[object], expected: Sequence[object]) -> float:
+    """Compare serialized named grudge records in save order."""
+    if len(actual) != len(expected):
+        return 1.0
+    maximum = 0.0
+    for actual_grudge, expected_grudge in zip(actual, expected):
+        for field in ("target", "source", "gui_name"):
+            if getattr(actual_grudge, field, "") != getattr(expected_grudge, field, ""):
+                return 1.0
+        for field in ("value", "decay"):
+            maximum = max(
+                maximum,
+                abs(
+                    float(getattr(actual_grudge, field, 0.0))
+                    - float(getattr(expected_grudge, field, 0.0))
+                ),
+            )
+    return maximum
+
+
 def _effect_history_max_delta(
     actual: Iterable[object], expected: Iterable[object]
 ) -> float:
@@ -238,12 +290,19 @@ def audit_turn(
     native_path: str | Path,
     state: SimulationState,
     data: SimulationData,
+    model_state: SimulationState | None = None,
 ) -> TermAuditRow:
     """Compare one native save to its simulator snapshot."""
     path = Path(native_path)
     save = parse_savegame(path)
     manager = native_manager_summary(path)
-    ordinary_delta, ordinary_name = _max_mapping_delta(state.values, save.simvalues)
+    model_state = model_state or state
+    ordinary_delta, ordinary_name = _max_mapping_delta(
+        model_state.values, save.simvalues
+    )
+    checkpoint_delta, checkpoint_name = _max_mapping_delta(
+        state.values, save.simvalues
+    )
     situation_delta, situation_name = _max_mapping_delta(
         state.situations, save.situations
     )
@@ -279,8 +338,33 @@ def audit_turn(
         turn=save.turn,
         income_delta=state.total_income - save.total_income,
         expenditure_delta=state.total_expenditure - save.total_expenditure,
+        debt_delta=state.debt - save.debt,
+        interest_rate_delta=state.interest_rate - save.interest_rate,
+        credit_rating_delta=(
+            state.credit_rating - save.credit_rating
+            if save.credit_rating is not None
+            else None
+        ),
+        turns_since_credit_delta=(
+            state.turns_since_credit - save.turns_since_credit
+            if save.turns_since_credit is not None
+            else None
+        ),
+        policy_finance_differences=(
+            _count_mapping_differences(state.policy_costs, save.policy_costs)
+            + _count_mapping_differences(state.policy_incomes, save.policy_incomes)
+            + _count_history_differences(
+                state.policy_cost_histories, save.policy_cost_histories
+            )
+            + _count_history_differences(
+                state.policy_income_histories, save.policy_income_histories
+            )
+        ),
+        grudge_max_delta=_grudge_max_delta(state.grudges, save.grudges),
         ordinary_max_delta=ordinary_delta,
         ordinary_max_name=ordinary_name,
+        ordinary_checkpoint_max_delta=checkpoint_delta,
+        ordinary_checkpoint_max_name=checkpoint_name,
         situation_max_delta=situation_delta,
         situation_max_name=situation_name,
         hidden_max_delta=hidden_delta,
@@ -308,10 +392,22 @@ def audit_turn(
                 state.policy_active, save.policy_active
             )
             + _count_mapping_differences(
+                state.policy_implementations, save.policy_implementations
+            )
+            + _count_mapping_differences(
+                state.policy_income_multipliers, save.policy_income_multipliers
+            )
+            + _count_mapping_differences(
+                state.policy_cost_multipliers, save.policy_cost_multipliers
+            )
+            + _count_mapping_differences(
                 state.policy_income_scalars, save.policy_income_scalars
             )
             + _count_mapping_differences(
                 state.policy_cost_scalars, save.policy_cost_scalars
+            )
+            + _count_mapping_differences(
+                state.effect_throttles, save.effect_throttles
             )
         ),
         active_situation_missing=len(active_expected - active_actual),
@@ -342,6 +438,7 @@ def audit_chain(
     native_paths: Sequence[str | Path],
     snapshots: Mapping[int, SimulationState],
     data: SimulationData,
+    model_snapshots: Mapping[int, SimulationState] | None = None,
 ) -> list[TermAuditRow]:
     """Audit every native checkpoint in serialized-turn order."""
     rows: list[TermAuditRow] = []
@@ -350,20 +447,29 @@ def audit_chain(
         state = snapshots.get(native_turn)
         if state is None:
             raise ValueError(f"no simulator snapshot for native turn {native_turn}")
-        rows.append(audit_turn(path, state, data))
+        rows.append(
+            audit_turn(
+                path,
+                state,
+                data,
+                (model_snapshots or {}).get(native_turn),
+            )
+        )
     return rows
 
 
 def _print_rows(rows: Sequence[TermAuditRow]) -> None:
     print(
-        "turn | finance (income, expenditure) | ordinary | situations | "
+        "turn | finance (income, expenditure, debt) | ordinary model/checkpoint | situations | "
         "voters (value, %, freq, income) | policy targets | parties | poll/election"
     )
     print("-" * 124)
     for row in rows:
         print(
-            f"{row.turn:>4} | {row.income_delta:+8.1f}, {row.expenditure_delta:+8.1f} | "
-            f"{row.ordinary_max_delta:.4f} | {row.situation_max_delta:.4f} | "
+            f"{row.turn:>4} | {row.income_delta:+8.1f}, {row.expenditure_delta:+8.1f}, "
+            f"{row.debt_delta:+8.1f} | "
+            f"{row.ordinary_max_delta:.4f}/{row.ordinary_checkpoint_max_delta:.4f} | "
+            f"{row.situation_max_delta:.4f} | "
             f"{row.voter_value_max_delta:.4f}, {row.voter_percentage_max_delta:.4f}, "
             f"{row.voter_frequency_max_delta:.4f}, {row.voter_income_max_delta:.4f} | "
             f"{row.policy_target_differences} | {row.party_differences} | "
@@ -410,6 +516,7 @@ def main() -> int:
         turn: save.active_situations for turn, save in native_saves.items()
     }
     data = simulator.load_simulation_data()
+    model_snapshots: dict[int, SimulationState] = {}
     snapshots = replay_simulator(
         args.initial_file,
         order_paths,
@@ -421,12 +528,30 @@ def main() -> int:
         ),
         native_manager_rosters=native_rosters,
         native_active_situations=native_situations,
+        native_sim_values={
+            turn: save.simvalues for turn, save in native_saves.items()
+        },
         native_voter_states=native_saves,
         native_effect_histories={
             turn: save.effect_histories for turn, save in native_saves.items()
         },
+        native_grudges={
+            turn: save.grudges for turn, save in native_saves.items()
+        },
+        native_hidden_values={
+            turn: save.hidden_values for turn, save in native_saves.items()
+        },
+        native_hidden_histories={
+            turn: save.hidden_histories for turn, save in native_saves.items()
+        },
+        native_situation_values={
+            turn: save.situations for turn, save in native_saves.items()
+        },
+        native_policy_states=native_saves,
+        native_finance_states=native_saves,
+        raw_snapshots=model_snapshots,
     )
-    rows = audit_chain(native_paths, snapshots, data)
+    rows = audit_chain(native_paths, snapshots, data, model_snapshots)
     if args.json:
         print(json.dumps([asdict(row) for row in rows], indent=2, sort_keys=True))
     else:

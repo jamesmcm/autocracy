@@ -11,11 +11,12 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, MutableMapping, Sequence
 
 from autocracy import simulator
 from autocracy.models import (
     EffectHistory,
+    Grudge,
     PolicyAction,
     SimulationConfig,
     SimulationData,
@@ -96,8 +97,16 @@ def replay_simulator(
     native_order_runtime: bool = True,
     native_manager_rosters: Mapping[int, Iterable[str]] | None = None,
     native_active_situations: Mapping[int, Iterable[str]] | None = None,
+    native_sim_values: Mapping[int, Mapping[str, float]] | None = None,
     native_voter_states: Mapping[int, SaveGame] | None = None,
     native_effect_histories: Mapping[int, Iterable[EffectHistory]] | None = None,
+    native_grudges: Mapping[int, Iterable[Grudge]] | None = None,
+    native_hidden_values: Mapping[int, Mapping[str, float]] | None = None,
+    native_hidden_histories: Mapping[int, Mapping[str, Sequence[float]]] | None = None,
+    native_situation_values: Mapping[int, Mapping[str, float]] | None = None,
+    native_policy_states: Mapping[int, SaveGame] | None = None,
+    native_finance_states: Mapping[int, SaveGame] | None = None,
+    raw_snapshots: MutableMapping[int, SimulationState] | None = None,
 ) -> dict[int, SimulationState]:
     """Replay captured orders, optionally continuing through no-order turns.
 
@@ -106,10 +115,17 @@ def replay_simulator(
     retaining the simulator's delayed runtime for direct interactive calls.
     Set ``native_order_runtime=False`` for the older abstract action model.
 
-    The optional native roster, situation, voter, and effect-history schedules
-    are explicit serialized-checkpoint inputs for parity audits. They model
-    native manager state that is not reconstructible from the deterministic
-    simulator alone and are never used by ordinary callers.
+    The optional native roster, simvalue, situation, voter, effect-history,
+    hidden-state, policy-runtime, and finance schedules are explicit
+    serialized-checkpoint inputs for parity audits. They model native manager
+    state that is not reconstructible from the deterministic simulator alone
+    and are never used by ordinary callers. ``native_grudges`` contains the
+    post-decay grudge inputs from the target save, so it is fed into the target
+    turn's neural pass rather than applied after the snapshot. The remaining
+    schedules are restored after that pass at the same serialized checkpoint
+    boundary. If ``raw_snapshots`` is supplied, it receives each state before
+    the optional simvalue overlay so audits can report model residuals without
+    hiding them behind the checkpoint bridge.
     """
     order_paths = _order_paths(orders_paths)
     if turns is not None and turns < 1:
@@ -185,6 +201,26 @@ def replay_simulator(
                 state,
                 active_situations=list(target_situations),
             )
+        target_grudges = (
+            native_grudges.get(state.turn + 1)
+            if native_grudges is not None
+            else None
+        )
+        target_hidden_values = (
+            native_hidden_values.get(state.turn + 1)
+            if native_hidden_values is not None
+            else None
+        )
+        target_hidden_histories = (
+            native_hidden_histories.get(state.turn + 1)
+            if native_hidden_histories is not None
+            else None
+        )
+        target_situation_values = (
+            native_situation_values.get(state.turn + 1)
+            if native_situation_values is not None
+            else None
+        )
         state = simulator.process_end_of_turn(
             state,
             graph,
@@ -192,7 +228,20 @@ def replay_simulator(
             config=replay_config,
             native_resigned_departments=native_departed,
             native_active_situations=target_situations,
+            native_grudges=target_grudges,
+            native_hidden_values=target_hidden_values,
+            native_hidden_histories=target_hidden_histories,
+            native_situation_values=target_situation_values,
         )
+        if raw_snapshots is not None:
+            raw_snapshots[state.turn] = state
+        target_sim_values = (
+            native_sim_values.get(state.turn)
+            if native_sim_values is not None
+            else None
+        )
+        if target_sim_values is not None:
+            state = simulator.apply_native_sim_values(state, target_sim_values)
         target_histories = (
             native_effect_histories.get(state.turn)
             if native_effect_histories is not None
@@ -223,6 +272,46 @@ def replay_simulator(
                 poll_rate=target_voters.poll_rate or 0.0,
                 peak_poll_rate=target_voters.peak_poll_rate or 0.0,
                 poll_history=target_voters.poll_history,
+                income_nodes={
+                    name: target_voters.simvalues[name]
+                    for name in simulator.INCOME_GROUP_NODES.values()
+                    if name in target_voters.simvalues
+                },
+            )
+        target_policy_state = (
+            native_policy_states.get(state.turn)
+            if native_policy_states is not None
+            else None
+        )
+        if target_policy_state is not None:
+            state = simulator.apply_native_policy_runtime(
+                state,
+                policy_implementations=target_policy_state.policy_implementations,
+                policy_active=target_policy_state.policy_active,
+                policy_cost_multipliers=target_policy_state.policy_cost_multipliers,
+                policy_income_multipliers=target_policy_state.policy_income_multipliers,
+                policy_cost_scalars=target_policy_state.policy_cost_scalars,
+                policy_income_scalars=target_policy_state.policy_income_scalars,
+                effect_throttles=target_policy_state.effect_throttles,
+            )
+        target_finance_state = (
+            native_finance_states.get(state.turn)
+            if native_finance_states is not None
+            else None
+        )
+        if target_finance_state is not None:
+            state = simulator.apply_native_finance_runtime(
+                state,
+                total_income=target_finance_state.total_income,
+                total_expenditure=target_finance_state.total_expenditure,
+                debt=target_finance_state.debt,
+                interest_rate=target_finance_state.interest_rate,
+                credit_rating=target_finance_state.credit_rating,
+                turns_since_credit=target_finance_state.turns_since_credit,
+                policy_costs=target_finance_state.policy_costs,
+                policy_incomes=target_finance_state.policy_incomes,
+                policy_cost_histories=target_finance_state.policy_cost_histories,
+                policy_income_histories=target_finance_state.policy_income_histories,
             )
         snapshots[state.turn] = state
     return snapshots

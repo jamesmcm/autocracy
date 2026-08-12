@@ -6,13 +6,21 @@ import pytest
 
 from autocracy import simulator
 from autocracy.agent import PassiveAgent
-from autocracy.models import PartyState, PolicyAction, Voter
+from autocracy.models import Grudge, PartyState, PolicyAction, Voter
 from autocracy.savegame import load_state_from_savegame, parse_savegame
 
 
 def test_state_serialization_round_trip(tmp_path):
     state, _ = simulator.get_initial_state("uk")
     state.policy_effect_history_started["StateHealthService"] = True
+    state.grudges = [
+        Grudge(
+            target="GDP",
+            value=-0.2,
+            decay=0.75,
+            source="CreditRatingDowngraded",
+        )
+    ]
     payload = simulator.state_to_dict(state)
     restored = simulator.state_from_dict(payload)
     assert restored.country == state.country
@@ -24,6 +32,7 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.policy_effect_history_started == state.policy_effect_history_started
     assert restored.political_capital_income == state.political_capital_income
     assert restored.voter_frequency_grudges == state.voter_frequency_grudges
+    assert restored.grudges == state.grudges
     assert restored.voter_incomes == state.voter_incomes
     assert restored.election_turns_until == state.election_turns_until
     assert restored.election_current_term == state.election_current_term
@@ -165,6 +174,74 @@ def test_process_end_of_turn_advances_turn_and_updates_values():
     next_state = simulator.process_end_of_turn(state, graph)
     assert next_state.turn == state.turn + 1
     assert next_state.values["GDP"] != pytest.approx(state.values["GDP"])
+
+
+def test_create_grudge_is_a_decaying_neural_input():
+    data = simulator.load_simulation_data()
+    clean, graph = load_state_from_savegame("gamedata/saves/uk0.xml", data)
+    with_grudge = replace(
+        clean,
+        grudges=[
+            Grudge(
+                target="GDP",
+                value=-0.2,
+                decay=0.75,
+                source="CreditRatingDowngraded",
+            )
+        ],
+    )
+
+    clean_next = simulator.process_end_of_turn(clean, graph, data)
+    grudge_next = simulator.process_end_of_turn(with_grudge, graph, data)
+
+    assert grudge_next.values["GDP"] < clean_next.values["GDP"]
+    assert grudge_next.grudges[0].value == pytest.approx(-0.15)
+
+
+def test_native_runtime_bridges_restore_serialized_manager_fields():
+    state, _ = simulator.get_initial_state("uk")
+    policy = simulator.apply_native_policy_runtime(
+        state,
+        policy_implementations={"BusLanes": 0.25},
+        policy_active={"BusLanes": True},
+        policy_cost_multipliers={"BusLanes": 1.1},
+        policy_income_multipliers={"BusLanes": 0.9},
+        policy_cost_scalars={"BusLanes": 0.8},
+        policy_income_scalars={"BusLanes": 1.2},
+        effect_throttles={"BusLanes": 0.125},
+    )
+    restored = simulator.apply_native_finance_runtime(
+        policy,
+        total_income=123.0,
+        total_expenditure=456.0,
+        debt=789.0,
+        interest_rate=0.12,
+        credit_rating=3,
+        turns_since_credit=1,
+        policy_costs={"BusLanes": 10.0},
+        policy_incomes={"BusLanes": 20.0},
+        policy_cost_histories={"BusLanes": [10.0]},
+        policy_income_histories={"BusLanes": [20.0]},
+    )
+
+    assert restored.policy_implementations["BusLanes"] == pytest.approx(0.25)
+    assert restored.effect_throttles["BusLanes"] == pytest.approx(0.125)
+    assert restored.total_income == pytest.approx(123.0)
+    assert restored.total_expenditure == pytest.approx(456.0)
+    assert restored.debt == pytest.approx(789.0)
+    assert restored.credit_rating == 3
+    assert restored.policy_cost_histories["BusLanes"] == [10.0]
+
+
+def test_year_history_uses_native_normalized_samples():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame("gamedata/saves/uk0.xml", data)
+
+    for _ in range(8):
+        state = simulator.process_end_of_turn(state, graph, data=data)
+
+    assert state.values["_year"] == pytest.approx(1.75)
+    assert state.hidden_histories["_year"][0] == pytest.approx(1.0)
 
 
 def test_process_end_of_turn_preserves_previous_manager_snapshot():
@@ -438,6 +515,53 @@ def test_state_health_ring_waits_for_an_explicit_order():
     )
 
 
+def test_private_schools_ring_waits_on_the_loaded_native_head():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    original = next(
+        history.values[0]
+        for history in state.effect_histories
+        if (history.source, history.target) == ("PrivateSchools", "Education")
+    )
+
+    advanced = simulator.process_end_of_turn(state, graph, data=data)
+    current = next(
+        history.values[0]
+        for history in advanced.effect_histories
+        if (history.source, history.target) == ("PrivateSchools", "Education")
+    )
+
+    assert current == pytest.approx(original)
+
+
+def test_poll_rate_counts_live_voters_with_native_party_cutoffs():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame(
+        "parity_cases/dem3saves/turn0_initial.xml", data
+    )
+    opposition = next(
+        party.name for party in state.parties.values() if party.party_type == 1
+    )
+    state.voters = [
+        Voter(value=0.0),
+        Voter(value=0.2),
+        Voter(value=0.199, party=opposition),
+        Voter(value=-0.2),
+    ]
+
+    assert simulator._calculate_poll_rate(state) == pytest.approx(0.25)
+
+    advanced = simulator.process_end_of_turn(state, graph, data=data)
+    assert advanced.poll_rate == pytest.approx(
+        simulator._calculate_poll_rate(
+            replace(state, voters=advanced.voters)
+        )
+    )
+    assert advanced.poll_history[0] == pytest.approx(advanced.poll_rate)
+
+
 def test_year_neuron_is_monotonic_quarter_counter():
     data = simulator.load_simulation_data()
     state, graph = load_state_from_savegame(
@@ -555,6 +679,33 @@ def test_initial_state_matches_initial_save():
         assert state.values[name] == pytest.approx(value, rel=1e-3, abs=1e-3)
     for name, value in save.policies.items():
         assert state.policies[name] == pytest.approx(value, rel=1e-6, abs=1e-6)
+
+
+def test_native_immigration_equation_calibration_matches_both_inputs():
+    data = simulator.load_simulation_data()
+    state, graph = load_state_from_savegame("gamedata/saves/uk0.xml", data)
+    actual = simulator.process_end_of_turn(state, graph, data)
+    expected = parse_savegame("gamedata/saves/uk1.xml")
+
+    assert actual.values["Immigration"] == pytest.approx(
+        expected.simvalues["Immigration"], abs=2e-4
+    )
+    assert actual.values["Wages"] == pytest.approx(
+        expected.simvalues["Wages"], abs=2e-4
+    )
+
+
+def test_native_simvalue_checkpoint_overlay_does_not_mutate_source():
+    state, _ = simulator.get_initial_state("uk")
+    original = state.values["GDP"]
+    restored = simulator.apply_native_sim_values(
+        state,
+        {"GDP": 0.123, "_not_a_loaded_node": 0.456},
+    )
+
+    assert state.values["GDP"] == original
+    assert restored.values["GDP"] == pytest.approx(0.123)
+    assert restored.values["_not_a_loaded_node"] == pytest.approx(0.456)
 
 
 def test_initial_state_does_not_use_hidden_response_calibration():

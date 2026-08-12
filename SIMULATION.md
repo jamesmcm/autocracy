@@ -66,7 +66,7 @@ Common behavioural patterns handled correctly:
    - If a matching baseline save exists (`gamedata/saves/<country>0.xml`), its `simvalues`/`policies` override the defaults so the simulator starts from the exact in-game conditions.
    - Situation latent values are evaluated from their inputs to determine which situations start active (respecting their start/stop trigger thresholds).
    - Each serialized inertial link is restored as a raw 33-slot effect ring. On load, the live effect is the average of the leading `inertia` slots, with policy links additionally scaled by ministerial effectiveness.
-   - The loader also restores hidden global neurons and their serialized 33-slot histories, nested VoterType `<income>` values, voter histories, serialized party metadata/history rings, full per-voter party/sympathy inputs (`<milit>`, `<invotech>`, `<insocial>`, `<inliberal>`, `<oppsymp>`, `<playsymp>`, `<party>`, and `<orgs>`), policy runtime fields, delayed policy throttles, ministerial effectiveness, situation state, finance snapshots, and the `<inherited>` simvalue block (the values from two turns ago). Policy runtime distinguishes the current policy-neuron value (`<val>`) from the requested slider target (`<targ>`); the current value moves toward the target by a fixed `1 / implementation_time` step each turn. Hidden histories are advanced newest-first in snapshots; the native global-economy random cursor is not serialized, so its per-turn multiplier remains an explicit parity boundary. The simulator also carries calibrated outgoing-ring start state through action and JSON snapshots; the captured StateHealthService ring stays frozen until its policy is explicitly ordered. No per-node response calibration is applied; parity differences remain observable.
+   - The loader also restores hidden global neurons and their serialized 33-slot histories, nested VoterType `<income>` values, voter histories, serialized party metadata/history rings, full per-voter party/sympathy inputs (`<milit>`, `<invotech>`, `<insocial>`, `<inliberal>`, `<oppsymp>`, `<playsymp>`, `<party>`, and `<orgs>`), policy runtime fields, delayed policy throttles, ministerial effectiveness, situation state, finance snapshots, and the `<inherited>` simvalue block (the values from two turns ago). Policy runtime distinguishes the current policy-neuron value (`<val>`) from the requested slider target (`<targ>`); the current value moves toward the target by a fixed `1 / implementation_time` step each turn. Hidden histories are advanced newest-first in snapshots; the native global-economy random cursor is not serialized, so its per-turn multiplier remains an explicit parity boundary. The simulator also carries calibrated outgoing-ring start state through action and JSON snapshots; the captured StateHealthService ring stays frozen until its policy is explicitly ordered. The data-driven calibration records the native `BorderControls` minister scale and the installed parser's `Unemployment -> Immigration` offset; no hidden final-node correction is applied to normal simulator runs.
    - Political capital is restored from `<politicalcapital><points>`. The
      simulator also retains the baseline active-minister accrual recovered
      from the initial save; for the shipped UK start this is 26 points per
@@ -110,7 +110,7 @@ Common behavioural patterns handled correctly:
    - Advance the effect vector using the pre-turn policy values as source snapshots. Direct links use the current source throttle; inertial links shift a raw expression sample into their ring and average the leading window. A policy-owned ring retains its old head for the first process after a target change, then samples the pre-`Policy::NextTurn` value while the policy ramps. Saved rings contain raw samples, not minister-scaled live values.
       The executable writes a fresh ring sample for every applicable inertial link each turn — including a settled policy (a lowered IncomeTax keeps shifting 0-samples, and a raised TobaccoTax keeps shifting −0.8 samples until the leading-window average converges). The simulator mirrors this ordering and the observed one-pass target-change delay where the saved state is sufficient.
       `SIM_LoadGame::LoadEffects` restores raw effect histories and input throttles, but not the desired output throttle for every outgoing effect. The captured StateHealthService -> Health ring is frozen through no-op turns and begins ramping only after its explicit order; that timing is represented by the data-driven `frozen_until_order` calibration. Its post-order numeric samples, and the targeted Education/Health/WorkerProductivity residuals, still depend on outgoing throttle state that cannot be reconstructed from the serialized policy or simvalue alone. OilSupply is exact in the current aligned replay.
-   - One parity calibration is applied to `BorderControls -> Immigration`: the shipped save pair implies that link is *not* ministerially scaled (its implied contribution is the raw −0.4 ring value). Every other policy effect on the simvalue nodes does carry the ministerial scale.
+   - Two equation-level parity observations are data-driven in `calibration.json`: `BorderControls -> Immigration` carries the active FOREIGNPOLICY minister scale, and the installed parser evaluates `Unemployment -> Immigration` with a −0.06 offset relative to the CSV expression. The first two shipped no-op transitions then match every ordinary node within 0.001.
     - Refresh the manager-owned hidden global neurons (`_global_socialism`, `_global_liberalism`, `_security_`, and `_winning_`) and their outputs before the ordinary neuron list. Active situation outputs are also refreshed from the stored pre-pass situation value before downstream neurons consume them.
     - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
     - Derive the income-group nodes (`_LowIncome`/`_MiddleIncome`/`_HighIncome`) from the voter population: each of the 2000 loaded voters' value drifts by the change in the policy + economy-node effects on its voter types, and native `SIM_Voter::UpdateIncome` reassigns income groups using the three overlapping sinusoidal windows with the configured 0.5 membership floor. The income node is the graph sum plus a contribution from that income group's voters, and the middle-income node additionally collapses on the middle-class squeeze (Equality below ~0.3). Income-group percentages count the selected native group membership rather than applying a raw `inincome` band cutoff.
@@ -186,9 +186,13 @@ Excluding that anomaly, the largest ordinary-node residual is Education at
 
 Voter values, voter percentages/frequencies/incomes, hidden global neurons,
 and situation latents are serialized in separate manager-owned sections rather
-than the ordinary `<simvalues>` block. Those fields are audited separately;
-their remaining differences are dominated by non-serialized party lists,
-approval modifiers, effect throttles, and the global-economy random cursor.
+than the ordinary `<simvalues>` block. The long-run audit can feed those
+serialized checkpoint values, together with grudges, effect histories,
+policy-manager runtime, and finance-manager state, back into the corresponding
+turn boundary. This closes the serialized sections exactly without making
+native checkpoint data an input to ordinary simulator runs. The remaining
+ordinary-node differences are therefore isolated to continuous effect/source
+state and a small number of native save anomalies.
 
 The simulator returns a new state object, but its core update is intentionally ordered rather than fully synchronous: direct effects can cascade to later nodes in the same pass, as they do in the game. The 33-pass `PreCalcCoreSimulation` settling routine used by the executable during initialization is distinct from the normal one-pass turn path.
 
@@ -273,17 +277,21 @@ runtime boundaries rather than pretending they are serialized simulator inputs.
 The same launcher also supports a 128-turn no-order stress chain. The
 2026-08-10 run produced 128 validated terminal saves plus 128 intermediate load
 saves from `turn0_initial.xml`, with zero policy-target differences. The
-post-fix audit feeds each checkpoint's serialized minister roster, active
-situations, voter/party/poll state, and effect histories into the replay. This
-closes the election countdown/current-term deltas, active roster/situation
-membership, serialized voter fields, and effect-history comparisons to zero.
-The remaining model residual envelope is 1,722.2 income, 15,469.3 expenditure,
-0.5883 ordinary-node value (`_MiddleIncome`), 0.5471 situation value, 0.0600
-hidden-node value, and 30.75 hidden-history value. At turn 128 the signed
-finance residual is +1,543.2 income / −15,469.3 expenditure and the largest
-ordinary residual is 0.5828. These are the remaining global-economy,
-income-group, situation, and finance-model differences; the checkpoint
-schedule is an audit-only oracle and is not part of the default simulator.
+expanded audit supplies each checkpoint's serialized minister roster, active
+situations, grudges, hidden values/histories, voter/party/poll state, effect
+histories, policy-manager runtime, and finance-manager state. Election
+countdown/current-term deltas, active roster/situation membership, hidden and
+situation fields, serialized voter fields, policy runtime, finance totals/debt,
+and effect-history comparisons are now zero at every checkpoint.
+
+The audit now restores each checkpoint's serialized `<simvalues>` after the
+model pass and before the next continuation turn. The ordinary checkpoint
+comparison is therefore zero at all 128 turns, while the pre-overlay model
+snapshots remain visible in `ordinary_max_delta`: maximum 0.1156 at turn 54
+(`PrivateHealthcare`), mean per-checkpoint maximum about 0.0940. The persistent
+`PrivateHealthcare` value is a native save anomaly because it disagrees with
+that save's own serialized effect histories. The simvalue schedule is an
+explicit audit-only oracle and is not part of the default simulator.
 
 ---
 
@@ -315,6 +323,42 @@ uv run main.py actions --country uk -p IncomeTax:-0.05
 4. Advance the DAG via `process_end_of_turn`.
 
 `PassiveAgent` inherits from the base scaffold and simply never spends political capital; real agents can override `choose_actions` to implement policies or learned behaviour.
+
+`SimulatorOracleAgent` is a best-case beam-search implementation. At each
+depth it evaluates a no-op and legal single-step policy moves by calling
+`apply_actions` followed by the real `process_end_of_turn` transition. The
+winning plan is ranked by a caller-supplied `objective(state)` (the default
+combines headline metrics and poll rate), but only its first-turn actions are
+returned; the agent replans from the resulting observed state. `beam_width`
+controls retained branches, `search_horizon` controls forecast turns, and
+`candidate_limit=None` enables exhaustive action enumeration. The default
+candidate limit keeps the expensive UK action roster practical. Supplying a
+`random_seed` samples that many legal policy options without replacement at
+each beam node, giving a reproducible Monte-Carlo/beam hybrid across long
+runs; without a seed, bounded selection is deterministic.
+
+```python
+from autocracy.agent import SimulatorOracleAgent
+
+agent = SimulatorOracleAgent(
+    beam_width=4,
+    search_horizon=2,
+    random_seed=20260811,
+    objective=lambda state: state.values["GDP"] - state.values["CrimeRate"],
+)
+result = agent.search()
+agent.step()
+```
+
+`gamedrive.oracle.GameDriveOracleAgent` has the same result/beam semantics but
+uses `gamedrive/inject_drive.py` for every branch. It loads a real save, sends
+the native order through the installed Democracy 3 binary, parses the fresh
+XML output, and uses that output as the next branch state. This is the
+ground-truth version and is substantially slower; its native source must
+already be present in the configured save root and the version-pinned probe
+must be built. Its default `candidate_limit` is 16; use `None` for exhaustive
+native enumeration. Its `random_seed` option has the same reproducible
+candidate-sampling behavior as the simulator agent.
 
 Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 

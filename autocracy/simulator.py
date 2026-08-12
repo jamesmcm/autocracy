@@ -8,7 +8,7 @@ import struct
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import networkx as nx
 
@@ -17,6 +17,7 @@ from .models import (
     BudgetModifier,
     Effect,
     EffectHistory,
+    Grudge,
     NodeDefinition,
     PolicyAction,
     PolicyActionOption,
@@ -67,6 +68,65 @@ def _copy_party(party: PartyState) -> PartyState:
         member_history=list(party.member_history),
         activist_history=list(party.activist_history),
     )
+
+
+def _copy_grudge(grudge: Grudge) -> Grudge:
+    """Copy one native grudge without sharing mutable runtime state."""
+    return replace(grudge)
+
+
+def _advance_grudges(grudges: Iterable[Grudge]) -> List[Grudge]:
+    """Advance native CreateGrudge inputs by one turn.
+
+    A grudge is created before ``NeuralEffect::NextTurn`` and therefore its
+    first visible value is already multiplied by its decay factor.  Existing
+    grudges follow the same rule on every subsequent turn.  Keeping the
+    records separate (rather than summing them) preserves different decay
+    rates for simultaneous events targeting one node.
+    """
+    return [
+        replace(
+            grudge,
+            value=_f32(grudge.value * grudge.decay),
+        )
+        for grudge in grudges
+    ]
+
+
+def _restore_native_grudge_inputs(grudges: Iterable[Grudge]) -> List[Grudge]:
+    """Convert serialized post-decay grudges to this turn's input values."""
+    restored: List[Grudge] = []
+    for grudge in grudges:
+        if grudge.decay:
+            value = _f32(grudge.value / grudge.decay)
+        else:
+            value = grudge.value
+        restored.append(replace(grudge, value=value))
+    return restored
+
+
+def _grudge_value(grudges: Iterable[Grudge], target: str) -> float:
+    """Return the current neural-input sum for one target."""
+    return _f32(
+        sum(
+            _f32(grudge.value)
+            for grudge in grudges
+            if grudge.target == target
+        )
+    )
+
+
+def _grudge_voter_inputs(grudges: Iterable[Grudge]) -> Dict[str, float]:
+    """Sum grudge inputs whose targets are aggregate voter types."""
+    totals: Dict[str, float] = {}
+    voter_names = set(VOTER_SYMBOL_NAMES.values())
+    for grudge in grudges:
+        if grudge.target not in voter_names:
+            continue
+        totals[grudge.target] = _f32(
+            totals.get(grudge.target, 0.0) + grudge.value
+        )
+    return totals
 
 
 def _complete_policy_finance_histories(
@@ -423,6 +483,7 @@ def _seed_state_from_initial_save(
         state.voter_incomes[name] = value
         state.values[name] = value
     state.voter_frequency_grudges = save.voter_frequency_grudges.copy()
+    state.grudges = [_copy_grudge(grudge) for grudge in save.grudges]
     state.voters = [_copy_voter(v) for v in save.voters]
     state.parties = {
         name: _copy_party(party) for name, party in save.parties.items()
@@ -737,10 +798,9 @@ def _policy_effect_scale(
         return 1.0
     effectiveness = state.ministerial_effectiveness.get(policy.department, 1.0)
     implementation = state.policy_implementations.get(effect.source, 1.0)
-    # Data-driven scale exemptions (calibration.json).  The shipped UK save
-    # pair implies BorderControls' Immigration output is applied at its full
-    # raw ring value rather than scaled by the FOREIGNPOLICY minister, and the
-    # never-introduced CitizenshipTests constant applies unscaled.
+    # Data-driven scale exemptions (calibration.json).  The never-introduced
+    # CitizenshipTests constant is retained as an unscaled input by the
+    # shipped native save.
     scale_mode = data.calibration.get("effect_scale", {}).get(
         f"{effect.source} -> {effect.target}"
     )
@@ -749,6 +809,24 @@ def _policy_effect_scale(
     if scale_mode == "unscaled":
         return 1.0
     return effectiveness * implementation
+
+
+def _effect_calibration_offset(data: SimulationData, effect: Effect) -> float:
+    """Return a measured native parser offset for one graph effect.
+
+    A small number of installed-game equations do not evaluate to the text
+    in the shipped CSV.  Keeping those observations in calibration data lets
+    the normal graph code remain data-driven and makes the exception portable
+    to a different gamedata root.
+    """
+    offsets = data.calibration.get("effect_offsets", {})
+    if not isinstance(offsets, Mapping):
+        return 0.0
+    value = offsets.get(f"{effect.source} -> {effect.target}", 0.0)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _advance_policy_runtime(
@@ -862,9 +940,9 @@ def _effect_is_applicable(
 
     if effect.source not in state.policies:
         return True
-    # Data-driven exemption (calibration.json): the serialized Immigration
-    # value carries the never-introduced CitizenshipTests constant term, so
-    # that one link is treated as always live (unscaled in _policy_effect_scale).
+    # Data-driven exemption (calibration.json): a game-data set may need a
+    # policy link to remain live while its policy is inactive.  The shipped UK
+    # calibration does not enable this exception for CitizenshipTests.
     if data.calibration.get("effect_applicability", {}).get(
         f"{effect.source} -> {effect.target}"
     ) == "always":
@@ -882,9 +960,12 @@ def _evaluate_effect_with_inertia(
     updated_effects: Dict[str, float],
     context: Dict[str, float],
     scale: float = 1.0,
+    offset: float = 0.0,
 ) -> float:
     target_value = _clamp(
-        evaluate_expression(effect.expression, x_value, context=context), -1.0, 1.0
+        evaluate_expression(effect.expression, x_value, context=context) + offset,
+        -1.0,
+        1.0,
     )
     effect_id = effect.effect_id
     if not effect_id:
@@ -951,7 +1032,10 @@ def _initialize_effect_memory(
                     1.0,
                 )
         return _clamp(
-            evaluate_expression(effect.expression, x_value, context=context)
+            (
+                evaluate_expression(effect.expression, x_value, context=context)
+                + _effect_calibration_offset(data, effect)
+            )
             * _policy_effect_scale(state, effect, data),
             -1.0,
             1.0,
@@ -983,7 +1067,12 @@ def _initialize_effect_memory(
                 )
             else:
                 effect_values[effect.effect_id or f"situation::{name}::input"] = _clamp(
-                    evaluate_expression(effect.expression, source_val, context=context)
+                    (
+                        evaluate_expression(
+                            effect.expression, source_val, context=context
+                        )
+                        + _effect_calibration_offset(data, effect)
+                    )
                     * _policy_effect_scale(state, effect, data),
                     -1.0,
                     1.0,
@@ -1003,7 +1092,12 @@ def _initialize_effect_memory(
                 )
             else:
                 effect_values[effect_id] = _clamp(
-                    evaluate_expression(effect.expression, latent, context=context)
+                    (
+                        evaluate_expression(
+                            effect.expression, latent, context=context
+                        )
+                        + _effect_calibration_offset(data, effect)
+                    )
                     * _policy_effect_scale(state, effect, data),
                     -1.0,
                     1.0,
@@ -1092,6 +1186,7 @@ def _update_situations(
                 previous_effects,
                 updated_effects,
                 context,
+                offset=_effect_calibration_offset(data, effect),
             )
         if not prerequisites_met:
             latent = 0.0
@@ -1265,11 +1360,63 @@ def _native_income_group_memberships(
     }
 
 
+def _native_voter_value(
+    voter: Voter,
+    voter_values: Dict[str, float],
+    voter_frequencies: Dict[str, float],
+    membership_threshold: float,
+) -> Optional[float]:
+    """Recalculate one live voter's value from its native host links.
+
+    ``SIM_Voter`` is a ``SIM_Neuron``.  Its value is therefore rebuilt from
+    the currently linked voter-type neurons during the main neuron pass; it
+    is not the previous individual value plus the change in each group.  The
+    voter manager's linked-list membership test is the same one used by the
+    percentage calculation below: political groups use their forced raw
+    coefficient, while ordinary groups add the current voter-type frequency
+    base.  The effective input weight is that same frequency-adjusted value,
+    clamped to the native [0, 1] range, rather than the serialized raw group
+    coefficient.
+
+    The executable accumulates these inputs as single-precision floats.  A
+    ``None`` result means the caller does not have enough live voter-type
+    data to use this native path and should retain the compatibility fallback
+    used for synthetic/legacy states.
+    """
+
+    total = 0.0
+    linked = False
+    for symbol, member in voter.groups.items():
+        name = VOTER_SYMBOL_NAMES.get(symbol)
+        if name is None or name not in voter_values:
+            continue
+        effective_member = member
+        if symbol in POLITICAL_GROUP_SYMBOLS:
+            is_linked = member > membership_threshold
+        else:
+            frequency = voter_frequencies.get(f"{name}_freq", 0.0)
+            effective_member = _clamp(
+                _f32(_f32(member) + _f32(frequency)), 0.0, 1.0
+            )
+            is_linked = effective_member >= membership_threshold
+        if not is_linked:
+            continue
+        linked = True
+        total = _f32(
+            _f32(total)
+            + _f32(effective_member * voter_values.get(name, 0.0))
+        )
+    if not linked:
+        return None
+    return _clamp(total, -1.0, 1.0)
+
+
 def _effects_on_voter_types(
     data: SimulationData,
     policies: Dict[str, float],
     node_values: Dict[str, float],
     situation_effects: Optional[Dict[str, float]] = None,
+    effect_values: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """Sum current policy, node, and situation effects on voter types.
 
@@ -1280,6 +1427,44 @@ def _effects_on_voter_types(
     """
     totals: Dict[str, float] = {}
     context = {**node_values, **policies}
+
+    # In the native pass the voter-type neuron consumes the current values of
+    # its incoming SIM_NeuralEffects.  Re-evaluating every policy equation
+    # here would resurrect inactive policy constants (for example the
+    # ``0.20`` term in a disabled Conservatives link) and would bypass
+    # inertia/ministerial scaling.  The runtime effect vector is therefore
+    # authoritative whenever the caller has one.
+    if effect_values is not None:
+        for source_name, target_name, edge_data in data.graph.edges(data=True):
+            target = data.nodes.get(target_name)
+            source = data.nodes.get(source_name)
+            if target is None or target.category != "VOTER":
+                continue
+            # VoterType influences are loaded through the graph for
+            # inspection, but the executable installs them as AddAdjusters
+            # on the source VoterType rather than ordinary neuron inputs.
+            if source is not None and source.category == "VOTER":
+                continue
+            for effect in edge_data.get("effects", []):
+                if effect.effect_id is None:
+                    continue
+                totals[target_name] = totals.get(target_name, 0.0) + (
+                    effect_values.get(effect.effect_id, 0.0)
+                )
+        if situation_effects is not None:
+            for definition in data.situations.values():
+                for effect in definition.effects:
+                    target = data.nodes.get(effect.target)
+                    if target is None or target.category != "VOTER":
+                        continue
+                    effect_id = effect.effect_id
+                    if effect_id is None:
+                        continue
+                    totals[effect.target] = totals.get(effect.target, 0.0) + (
+                        situation_effects.get(effect_id, 0.0)
+                    )
+        return totals
+
     for name, policy in data.policies.items():
         level = policies.get(name, 0.0)
         for effect in policy.effects:
@@ -1471,6 +1656,7 @@ def _advance_voters_and_income_nodes(
     source_policies: Optional[Dict[str, float]] = None,
     previous_voter_frequencies: Optional[Dict[str, float]] = None,
     situation_effects: Optional[Dict[str, float]] = None,
+    previous_grudges: Optional[Iterable[Grudge]] = None,
 ) -> None:
     """Advance the voter population and re-derive the income ``_`` nodes.
 
@@ -1487,48 +1673,45 @@ def _advance_voters_and_income_nodes(
         return
     _advance_native_political_groups(state, new_values)
     _advance_party_memberships(state, data)
-    context = {**new_values, **state.policies, **state.situations}
-    source = source_policies if source_policies is not None else state.policies
-    previous_context = {**state.values, **source, **state.situations}
+    previous_voter_values = state.voter_values.copy()
     current = _effects_on_voter_types(
-        data, state.policies, new_values, situation_effects=situation_effects
+        data,
+        state.policies,
+        new_values,
+        situation_effects=situation_effects,
+        effect_values=situation_effects,
     )
+    current_grudge_inputs = _grudge_voter_inputs(state.grudges)
+    previous_grudge_inputs = _grudge_voter_inputs(
+        state.grudges if previous_grudges is None else previous_grudges
+    )
+    for name, value in current_grudge_inputs.items():
+        current[name] = _f32(current.get(name, 0.0) + value)
+    source = source_policies if source_policies is not None else state.policies
     previous = _effects_on_voter_types(
-        data, source, state.values, situation_effects=state.effects
+        data,
+        source,
+        state.values,
+        situation_effects=state.effects,
+        effect_values=state.effects,
     )
+    for name, value in previous_grudge_inputs.items():
+        previous[name] = _f32(previous.get(name, 0.0) + value)
 
-    # The voter-type poll values drift with the change in their incoming
-    # effects (a tax cut raises the affected groups' polls).  The ministers'
-    # satisfaction is 0.5 + the average of the two groups they sympathise
-    # with, so this makes the loyalty (and capital income) track the game.
+    # The loaded voter-type neuron already contains the static load-time
+    # inputs.  Native NextTurn applies the change in its incoming effect sum;
+    # rebuilding from the CSV default would discard those serialized inputs
+    # (and produces fixed -0.05/-0.15 offsets in the first quiet turn).
     for symbol, name in VOTER_SYMBOL_NAMES.items():
         if name in state.voter_values:
             state.voter_values[name] = _clamp(
                 state.voter_values[name]
-                + (current.get(name, 0.0) - previous.get(name, 0.0)),
-                -1.0,
-                1.0,
-            )
-    # The serialized polls show the income/union groups collapse harder than
-    # the direct effects alone once inequality spikes (Equality drops below
-    # ~0.3): the middle-income and capitalist voters turn sharply negative at
-    # the SalesTax/PropertyTax rises, and the trade-unionists follow at the
-    # t9 unemployment spike.  These groups are what the ministers'
-    # satisfaction (and thus the late-turn capital income) hangs on.
-    equality = new_values.get("Equality", 0.0)
-    collapse_groups = data.calibration.get("voter_collapse", {}).get("groups", {})
-    for name, params in collapse_groups.items():
-        if name in state.voter_values:
-            slope = float(params.get("slope", 0.0))
-            threshold = float(params.get("threshold", 0.0))
-            state.voter_values[name] = _clamp(
-                state.voter_values[name] + min(0.0, slope * (equality - threshold)),
+                + current.get(name, 0.0)
+                - previous.get(name, 0.0),
                 -1.0,
                 1.0,
             )
 
-    income_sums: Dict[int, float] = {}
-    income_weights: Dict[int, float] = {}
     membership_frequencies = (
         previous_voter_frequencies
         if previous_voter_frequencies is not None
@@ -1544,43 +1727,57 @@ def _advance_voters_and_income_nodes(
         voter.groups.update(
             _native_income_group_memberships(voter, membership_threshold)
         )
-        delta = 0.0
-        for symbol, member in voter.groups.items():
-            if member <= 0.0:
-                continue
-            name = VOTER_SYMBOL_NAMES.get(symbol)
-            if name is None:
-                continue
-            delta += (current.get(name, 0.0) - previous.get(name, 0.0)) * member
-        # The voter-opinion feedback: once the economy crashes (GDP collapses
-        # through the calibration threshold) the voters' values slide toward
-        # -1, which is what bottoms the serialized polls out at the
-        # GeneralStrike/recession.
-        crash_cfg = data.calibration.get("voter_collapse", {}).get("gdp_crash", {})
-        crash_slope = float(crash_cfg.get("slope", 2.0))
-        crash_threshold = float(crash_cfg.get("threshold", 0.15))
-        crash = min(0.0, crash_slope * (new_values.get("GDP", 0.0) - crash_threshold))
-        voter.value = _clamp(voter.value + delta + crash, -1.0, 1.0)
+        native_value = _native_voter_value(
+            voter,
+            state.voter_values,
+            state.voter_frequencies,
+            membership_threshold,
+        )
+        if native_value is not None:
+            # Native voter values are neuron sums over the live voter-type
+            # links.  In particular, do not add the GDP-collapse heuristic
+            # here: any economy-wide voter effect is already represented by
+            # the current voter-type neurons.
+            voter.value = native_value
+        else:
+            # Compatibility path for hand-built/legacy states that do not
+            # contain the voter-type values needed by the live-link model.
+            delta = 0.0
+            for symbol, member in voter.groups.items():
+                if member <= 0.0:
+                    continue
+                name = VOTER_SYMBOL_NAMES.get(symbol)
+                if name is None:
+                    continue
+                delta += (
+                    current.get(name, 0.0) - previous_voter_values.get(name, 0.0)
+                ) * member
+            # The voter-opinion feedback: once the economy crashes (GDP
+            # collapses through the calibration threshold) the compatibility
+            # path slides voters toward -1.
+            crash_cfg = data.calibration.get("voter_collapse", {}).get("gdp_crash", {})
+            crash_slope = float(crash_cfg.get("slope", 2.0))
+            crash_threshold = float(crash_cfg.get("threshold", 0.15))
+            crash = min(
+                0.0,
+                crash_slope * (new_values.get("GDP", 0.0) - crash_threshold),
+            )
+            voter.value = _clamp(voter.value + delta + crash, -1.0, 1.0)
         # Keep the existing voter-contribution calibration isolated from the
         # native membership correction.  The captured game values already
         # match the graph sum plus the calibrated squeeze; enabling this
         # approximation with native weights creates a larger late-turn error.
-        if symbol in INCOME_GROUP_NODES:
-            income_sums[symbol] = income_sums.get(symbol, 0.0) + member * voter.value
-            income_weights[symbol] = income_weights.get(symbol, 0.0) + member
-
     contrib_cfg = data.calibration.get("voter_collapse", {}).get("voter_contribution", {})
     contrib_slope = float(contrib_cfg.get("slope", 2.0))
     contrib_offset = float(contrib_cfg.get("offset", 0.7))
     squeeze_nodes = data.calibration.get("voter_collapse", {}).get("squeeze", {})
     for symbol, node_name in INCOME_GROUP_NODES.items():
-        weight = income_weights.get(symbol, 0.0)
+        # The native income-group host links are not serialized.  The
+        # long-run checkpoint replay showed that estimating their aggregate
+        # contribution from the loaded voter list overwhelms the measured
+        # node values, so keep this compatibility calibration disabled unless
+        # a future save exposes the corresponding manager field.
         contribution = 0.0
-        if weight > 0.0:
-            avg = income_sums[symbol] / weight
-            # Voter-derived contribution: stays ~0 until the group's voters
-            # collapse, then drags the node down.
-            contribution = min(0.0, contrib_slope * (avg + contrib_offset))
         if node_name in squeeze_nodes:
             # Equality-driven collapse (calibration.json): e.g. the middle
             # income "effective income" collapses once the SalesTax/PropertyTax
@@ -1645,6 +1842,36 @@ def _advance_voters_and_income_nodes(
             state.voter_percentages[f"{name}_perc"] = count / n_voters
 
 
+def _calculate_poll_rate(state: SimulationState) -> float:
+    """Calculate the native potential-voter rate from the live voter list.
+
+    ``SIM_PollsManager::CalculateVoteRate`` does not aggregate the serialized
+    voter-type values.  It walks every live voter, asks
+    ``SIM_Voter::WillVoteForPlayer`` and divides the affirmative count by the
+    live-list size.  The approval field used by that predicate is the base
+    approval ``(value + 1) / 2``; opposition-party voters use the native
+    ``> 0.6`` cutoff and all other voters use ``> 0.5``.
+
+    The executable performs the arithmetic in single precision.  Keeping the
+    rounding here matters for voters that sit exactly on a threshold in a
+    long replay.
+    """
+    if not state.voters:
+        return 0.0
+    opposition_parties = {
+        party.name
+        for party in state.parties.values()
+        if party.party_type == 1
+    }
+    affirmative = 0
+    for voter in state.voters:
+        approval = _f32(_f32(voter.value) + 1.0)
+        approval = _f32(approval * 0.5)
+        threshold = 0.6 if voter.party in opposition_parties else 0.5
+        affirmative += approval > threshold
+    return _f32(affirmative / len(state.voters))
+
+
 def _advance_state_values(
     state: SimulationState,
     graph: nx.DiGraph,
@@ -1652,6 +1879,9 @@ def _advance_state_values(
     source_policies: Optional[Dict[str, float]] = None,
     *,
     native_order_runtime: bool = False,
+    previous_grudges: Optional[Iterable[Grudge]] = None,
+    native_hidden_values: Optional[Mapping[str, float]] = None,
+    native_situation_values: Optional[Mapping[str, float]] = None,
 ) -> tuple[
     Dict[str, float],
     Dict[str, float],
@@ -1691,6 +1921,10 @@ def _advance_state_values(
         # on save but must be refreshed from the live debt/GDP rather than
         # kept at the loaded value.
         new_values["_effectivedebt_"] = _effective_debt_ratio(state, data)
+    if native_hidden_values is not None:
+        for name, value in native_hidden_values.items():
+            if name in new_values:
+                new_values[name] = float(value)
 
     # SituationManager runs before the effect vector in the main turn path.
     # Keep its activation decision separate from the newly calculated latent
@@ -1746,10 +1980,13 @@ def _advance_state_values(
                     return
             new_effects[effect.effect_id] = 0.0
             return
-        raw_value = evaluate_expression(
-            effect.expression,
-            effect_source(effect, context),
-            context=context,
+        raw_value = (
+            evaluate_expression(
+                effect.expression,
+                effect_source(effect, context),
+                context=context,
+            )
+            + _effect_calibration_offset(data, effect)
         )
         if effect.inertia:
             history = history_by_id.get(effect.effect_id)
@@ -1837,10 +2074,15 @@ def _advance_state_values(
         # Introduced policies already have their target in pre_policy_values,
         # so the same rule covers both paths.
         sample_policy_values = pre_policy_values
-        raw_value = evaluate_expression(
-            effect.expression,
-            effect_source(effect, pre_context, policy_values=sample_policy_values),
-            context=pre_context,
+        raw_value = (
+            evaluate_expression(
+                effect.expression,
+                effect_source(
+                    effect, pre_context, policy_values=sample_policy_values
+                ),
+                context=pre_context,
+            )
+            + _effect_calibration_offset(data, effect)
         )
         if effect.inertia:
             history = history_by_id.get(effect.effect_id)
@@ -1886,8 +2128,8 @@ def _advance_state_values(
             for definition in data.situations.values()
             for effect in definition.effects
             if effect.target == node_name
-            and node_name not in INCOME_GROUP_NODES.values()
         )
+        total += _grudge_value(state.grudges, node_name)
         return total
 
     def refresh_outputs(source_name: str, context: Dict[str, float]) -> None:
@@ -1916,6 +2158,10 @@ def _advance_state_values(
     # order.
     _advance_global_political_nodes(new_values, incoming_value)
     _advance_global_incoming_nodes(new_values, incoming_value)
+    if native_hidden_values is not None:
+        for name, value in native_hidden_values.items():
+            if name in new_values:
+                new_values[name] = float(value)
     context = {**new_values, **state.policies, **state.situations}
     refresh_outputs("_global_socialism", context)
     refresh_outputs("_global_liberalism", context)
@@ -1982,8 +2228,39 @@ def _advance_state_values(
         refresh_outputs(name, context)
         state.voter_incomes[name] = new_values[name]
 
+    # Situation neurons are visited after the ordinary simulation neurons and
+    # before VoterManager.  Recalculate their input links from the values
+    # produced by this pass; using the pre-turn effect vector here leaves
+    # StreetGangs, GeneralStrike, and Alcoholism permanently one turn behind
+    # the native chain.
+    situation_values: Dict[str, float] = {}
+    situation_context = {**new_values, **state.policies, **state.situations}
+    for name, definition in data.situations.items():
+        prerequisites_met = all(
+            state.policies.get(prerequisite, 0.0) > EPSILON
+            for prerequisite in definition.prerequisites
+        )
+        latent = definition.default if prerequisites_met else 0.0
+        if prerequisites_met:
+            for effect in definition.inputs:
+                refresh_effect(effect, situation_context)
+                latent += new_effects.get(effect.effect_id or "", 0.0)
+        situation_values[name] = _clamp(latent, 0.0, 1.0)
+        if native_situation_values is not None and name in native_situation_values:
+            situation_values[name] = _clamp(
+                float(native_situation_values[name]), 0.0, 1.0
+            )
+        situation_context[name] = situation_values[name]
+
+    # CalculateValue updates a situation's outgoing effects immediately.  Do
+    # this before VoterManager consumes the voter-type neurons, while keeping
+    # the activation list decided by SituationManager at turn start.
+    output_context = {**new_values, **state.policies, **situation_values}
+    for name in data.situations:
+        refresh_outputs(name, output_context)
+
     # The income-group "_" nodes are voter-derived: the graph sum above is
-    # the base, and the voter population's collapse drags them down.
+    # the base, with only the calibrated long-run squeeze applied below.
     _advance_voters_and_income_nodes(
         state,
         data,
@@ -1991,31 +2268,22 @@ def _advance_state_values(
         source_policies=source_policies,
         previous_voter_frequencies=previous_voter_frequencies,
         situation_effects=new_effects,
+        previous_grudges=previous_grudges,
     )
 
-    # Situation values are serialized after their input links have advanced.
-    # Their active output decision remains the manager decision from the
-    # beginning of this pass.
-    situation_values: Dict[str, float] = {}
-    for name, definition in data.situations.items():
-        prerequisites_met = all(
-            state.policies.get(prerequisite, 0.0) > EPSILON
-            for prerequisite in definition.prerequisites
-        )
-        latent = (
-            definition.default
-            + sum(
-                new_effects.get(effect.effect_id or "", 0.0)
-                for effect in definition.inputs
-            )
-            if prerequisites_met
-            else 0.0
-        )
-        situation_values[name] = _clamp(latent, 0.0, 1.0)
-
-    situation_context = {**new_values, **state.policies, **situation_values}
-    for name in data.situations:
-        refresh_outputs(name, situation_context)
+    # VoterManager owns these nested neurons and updates them after the main
+    # simulation-neuron pass.  Publish the post-manager values into the
+    # serialized value map as well; otherwise the next turn's effect context
+    # would keep reading the previous VoterType/frequency/income values even
+    # though the dedicated runtime fields had advanced.
+    for name, value in state.voter_values.items():
+        new_values[name] = value
+    for name, value in state.voter_percentages.items():
+        new_values[name] = value
+    for name, value in state.voter_frequencies.items():
+        new_values[name] = value
+    for name, value in state.voter_incomes.items():
+        new_values[name] = value
 
     return (
         new_values,
@@ -2253,6 +2521,25 @@ def apply_native_manager_roster(
     )
 
 
+def apply_native_sim_values(
+    state: SimulationState,
+    values: Mapping[str, float],
+) -> SimulationState:
+    """Restore serialized ``<simvalues>`` at an audit checkpoint.
+
+    A native save does not include every live neuron/manager cursor needed to
+    deterministically continue the executable.  This explicit checkpoint
+    bridge keeps long native-vs-simulator replays aligned without changing
+    ordinary simulator runs; callers that need model residuals can retain the
+    state immediately before applying this overlay.
+    """
+    restored_values = state.values.copy()
+    restored_values.update(
+        {str(name): float(value) for name, value in values.items()}
+    )
+    return replace(state, values=restored_values)
+
+
 def apply_native_voter_runtime(
     state: SimulationState,
     *,
@@ -2266,6 +2553,7 @@ def apply_native_voter_runtime(
     poll_rate: float = 0.0,
     peak_poll_rate: float = 0.0,
     poll_history: Iterable[float] = (),
+    income_nodes: Optional[Mapping[str, float]] = None,
 ) -> SimulationState:
     """Restore serialized voter-manager state for a checkpoint replay.
 
@@ -2283,6 +2571,10 @@ def apply_native_voter_runtime(
         voter_incomes,
     ):
         values.update({str(name): float(value) for name, value in mapping.items()})
+    if income_nodes is not None:
+        for name in INCOME_GROUP_NODES.values():
+            if name in income_nodes:
+                values[name] = float(income_nodes[name])
     return replace(
         state,
         values=values,
@@ -2333,6 +2625,107 @@ def apply_native_effect_histories(
             restored, graph, data=data, effect_histories=history_copy
         )
     return restored
+
+
+def apply_native_policy_runtime(
+    state: SimulationState,
+    *,
+    policy_implementations: Mapping[str, float],
+    policy_active: Mapping[str, bool],
+    policy_cost_multipliers: Mapping[str, float],
+    policy_income_multipliers: Mapping[str, float],
+    policy_cost_scalars: Mapping[str, float],
+    policy_income_scalars: Mapping[str, float],
+    effect_throttles: Optional[Mapping[str, float]] = None,
+) -> SimulationState:
+    """Restore serialized policy-manager runtime fields for a parity audit."""
+    return replace(
+        state,
+        policy_implementations={
+            str(name): float(value)
+            for name, value in policy_implementations.items()
+        },
+        policy_active={str(name): bool(value) for name, value in policy_active.items()},
+        policy_cost_multipliers={
+            str(name): float(value)
+            for name, value in policy_cost_multipliers.items()
+        },
+        policy_income_multipliers={
+            str(name): float(value)
+            for name, value in policy_income_multipliers.items()
+        },
+        policy_cost_scalars={
+            str(name): float(value) for name, value in policy_cost_scalars.items()
+        },
+        policy_income_scalars={
+            str(name): float(value) for name, value in policy_income_scalars.items()
+        },
+        effect_throttles=(
+            {
+                str(name): float(value) for name, value in effect_throttles.items()
+            }
+            if effect_throttles is not None
+            else state.effect_throttles.copy()
+        ),
+    )
+
+
+def apply_native_finance_runtime(
+    state: SimulationState,
+    *,
+    total_income: float,
+    total_expenditure: float,
+    debt: float,
+    interest_rate: float,
+    credit_rating: int,
+    turns_since_credit: int,
+    policy_costs: Optional[Mapping[str, float]] = None,
+    policy_incomes: Optional[Mapping[str, float]] = None,
+    policy_cost_histories: Optional[Mapping[str, Sequence[float]]] = None,
+    policy_income_histories: Optional[Mapping[str, Sequence[float]]] = None,
+) -> SimulationState:
+    """Restore serialized finance-manager state for a checkpoint replay."""
+    return replace(
+        state,
+        total_income=float(total_income),
+        total_expenditure=float(total_expenditure),
+        debt=float(debt),
+        interest_rate=float(interest_rate),
+        credit_rating=int(credit_rating),
+        turns_since_credit=int(turns_since_credit),
+        policy_costs=(
+            {str(name): float(value) for name, value in policy_costs.items()}
+            if policy_costs is not None
+            else state.policy_costs.copy()
+        ),
+        policy_incomes=(
+            {str(name): float(value) for name, value in policy_incomes.items()}
+            if policy_incomes is not None
+            else state.policy_incomes.copy()
+        ),
+        policy_cost_histories=(
+            {
+                str(name): [float(value) for value in values]
+                for name, values in policy_cost_histories.items()
+            }
+            if policy_cost_histories is not None
+            else {
+                name: list(values)
+                for name, values in state.policy_cost_histories.items()
+            }
+        ),
+        policy_income_histories=(
+            {
+                str(name): [float(value) for value in values]
+                for name, values in policy_income_histories.items()
+            }
+            if policy_income_histories is not None
+            else {
+                name: list(values)
+                for name, values in state.policy_income_histories.items()
+            }
+        ),
+    )
 
 
 def _minister_fallback_competence(data: SimulationData) -> float:
@@ -2799,6 +3192,10 @@ def process_end_of_turn(
     *,
     native_resigned_departments: Optional[Iterable[str]] = None,
     native_active_situations: Optional[Iterable[str]] = None,
+    native_grudges: Optional[Iterable[Grudge]] = None,
+    native_hidden_values: Optional[Mapping[str, float]] = None,
+    native_hidden_histories: Optional[Mapping[str, Sequence[float]]] = None,
+    native_situation_values: Optional[Mapping[str, float]] = None,
 ) -> SimulationState:
     data = data or load_simulation_data()
     election_turns_until = _advance_election_countdown(state, data)
@@ -2821,6 +3218,7 @@ def process_end_of_turn(
         voter_frequencies=state.voter_frequencies.copy(),
         voter_incomes=state.voter_incomes.copy(),
         voter_frequency_grudges=state.voter_frequency_grudges.copy(),
+        grudges=[_copy_grudge(grudge) for grudge in state.grudges],
         voters=[_copy_voter(voter) for voter in state.voters],
         parties={name: _copy_party(party) for name, party in state.parties.items()},
     )
@@ -2851,6 +3249,17 @@ def process_end_of_turn(
             runtime_state.values.get("_global_interest_rates_", 0.5),
         ),
     )
+    # The native event/dilemma/pressure managers run before the neural-effect
+    # vector.  Their CreateGrudge calls must therefore feed this same turn's
+    # node calculation, not the already-completed snapshot.  A supplied
+    # checkpoint grudge set is an explicit parity-audit input: savegame values
+    # are already post-decay, so they bypass the normal advance below.
+    prior_grudges = [
+        _copy_grudge(grudge) for grudge in runtime_state.grudges
+    ]
+    runtime_state = _run_stochastic_systems(runtime_state, graph, data, config)
+    if native_grudges is not None:
+        runtime_state.grudges = _restore_native_grudge_inputs(native_grudges)
     (
         new_values,
         new_effects,
@@ -2864,7 +3273,17 @@ def process_end_of_turn(
         data,
         source_policies=source_policies,
         native_order_runtime=(config.native_order_runtime if config else False),
+        previous_grudges=prior_grudges,
+        native_hidden_values=native_hidden_values,
+        native_situation_values=native_situation_values,
     )
+    # Polls are refreshed by PollsManager after the voter manager has updated
+    # the live voter list.  The loaded poll value is only the previous save's
+    # observation; carrying it forward creates a steadily growing long-run
+    # parity error.
+    poll_rate = _calculate_poll_rate(runtime_state)
+    peak_poll_rate = max(runtime_state.peak_poll_rate, poll_rate)
+    poll_history = [poll_rate, *runtime_state.poll_history[:19]]
     # Ministers gain experience each turn (drifting the income/cost scalars)
     # and -- when the loyalty subsystem is enabled -- their satisfaction and
     # loyalty advance, which drives the per-turn political-capital income.
@@ -2939,6 +3358,24 @@ def process_end_of_turn(
     )
     if native_active_situations is not None:
         active_situations = [str(name) for name in native_active_situations]
+    if native_hidden_histories is not None:
+        hidden_histories = {
+            name: [float(value) for value in values]
+            for name, values in native_hidden_histories.items()
+        }
+    else:
+        hidden_histories = {}
+        for name, values in runtime_state.hidden_histories.items():
+            sample = new_values.get(name)
+            if sample is None:
+                hidden_histories[name] = list(values)
+                continue
+            # The native year neuron grows monotonically, but its serialized
+            # history is a normalized [0, 1] sample ring rather than the
+            # public quarter counter itself.
+            if name == "_year":
+                sample = _clamp(sample, 0.0, 1.0)
+            hidden_histories[name] = [sample, *values[:32]]
     new_state = SimulationState(
         country=runtime_state.country,
         turn=runtime_state.turn + 1,
@@ -2959,17 +3396,17 @@ def process_end_of_turn(
         policy_income_histories=policy_income_histories,
         policy_finance_levels=runtime_state.policy_finance_levels.copy(),
         global_economy_position=global_position,
-        hidden_histories={
-            name: [new_values[name], *values[:32]]
-            if name in new_values
-            else list(values)
-            for name, values in runtime_state.hidden_histories.items()
-        },
+        hidden_histories=hidden_histories,
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
         voter_incomes=runtime_state.voter_incomes.copy(),
         voter_frequency_grudges=runtime_state.voter_frequency_grudges.copy(),
+        grudges=(
+            [_copy_grudge(grudge) for grudge in native_grudges]
+            if native_grudges is not None
+            else _advance_grudges(runtime_state.grudges)
+        ),
         voters=[_copy_voter(v) for v in runtime_state.voters],
         parties={
             name: _copy_party(party)
@@ -2982,9 +3419,9 @@ def process_end_of_turn(
         election_player_votes=runtime_state.election_player_votes,
         election_opposition_votes=runtime_state.election_opposition_votes,
         election_absent_votes=runtime_state.election_absent_votes,
-        poll_rate=runtime_state.poll_rate,
-        peak_poll_rate=runtime_state.peak_poll_rate,
-        poll_history=list(runtime_state.poll_history),
+        poll_rate=poll_rate,
+        peak_poll_rate=peak_poll_rate,
+        poll_history=poll_history,
         policy_implementations=runtime_state.policy_implementations.copy(),
         policy_active=runtime_state.policy_active.copy(),
         policy_cost_multipliers=runtime_state.policy_cost_multipliers.copy(),
@@ -3015,9 +3452,9 @@ def process_end_of_turn(
             data,
             runtime_state.values.get("_global_interest_rates_", 0.5),
         ),
-        event_log=list(state.event_log),
-        fired_plots=list(state.fired_plots),
-        group_threats=dict(state.group_threats),
+        event_log=list(runtime_state.event_log),
+        fired_plots=list(runtime_state.fired_plots),
+        group_threats=dict(runtime_state.group_threats),
     )
     # Finance is recomputed from the advanced policy values and ministerial
     # scalars, with the multiplier neurons evaluated at the *previous* turn's
@@ -3039,7 +3476,7 @@ def process_end_of_turn(
         # for the next native order phase.  The displayed totals above use
         # the live current values; only the following debt preview is delayed.
         new_state.policy_finance_levels = new_state.policies.copy()
-    return _run_stochastic_systems(new_state, graph, data, config)
+    return new_state
 
 
 def resolve_election(
@@ -3290,6 +3727,7 @@ def apply_actions(
         voter_frequencies=state.voter_frequencies.copy(),
         voter_incomes=state.voter_incomes.copy(),
         voter_frequency_grudges=state.voter_frequency_grudges.copy(),
+        grudges=[_copy_grudge(grudge) for grudge in state.grudges],
         voters=[_copy_voter(v) for v in state.voters],
         parties={
             name: _copy_party(party) for name, party in state.parties.items()
@@ -3457,6 +3895,16 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "voter_frequencies": state.voter_frequencies,
         "voter_incomes": state.voter_incomes,
         "voter_frequency_grudges": state.voter_frequency_grudges,
+        "grudges": [
+            {
+                "target": grudge.target,
+                "value": grudge.value,
+                "decay": grudge.decay,
+                "source": grudge.source,
+                "gui_name": grudge.gui_name,
+            }
+            for grudge in state.grudges
+        ],
         "voters": [
             {
                 "groups": dict(v.groups),
@@ -3588,6 +4036,17 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
             k: float(v)
             for k, v in dict(payload.get("voter_frequency_grudges", {})).items()
         },
+        grudges=[
+            Grudge(
+                target=str(item.get("target", "")),
+                value=float(item.get("value", 0.0)),
+                decay=float(item.get("decay", 1.0)),
+                source=str(item.get("source", "")),
+                gui_name=str(item.get("gui_name", "")),
+            )
+            for item in payload.get("grudges", [])
+            if isinstance(item, dict) and item.get("target")
+        ],
         voters=[
             Voter(
                 groups={int(k): float(w) for k, w in dict(v.get("groups", {})).items()},

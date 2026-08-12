@@ -45,9 +45,11 @@ political capital, total income, total expenditure, and net balance. The
 - `autocracy/simulator.py` builds the DAG, exposes state/turn/action helpers,
   and leaves dilemmas, attacks, and events as explicit stubs.
 - `autocracy/agent.py` provides the `BaseAgent`/`PassiveAgent` turn-loop
-  scaffold.
+  scaffold and the simulator-backed beam-search oracle.
 - `autocracy/savegame.py` parses Democracy 3 XML saves and compares simulator
   output against real snapshots.
+- `gamedrive/oracle.py` provides a native beam-search oracle that evaluates
+  branches through the installed Democracy 3 executable.
 - `main.py` provides the Typer/Rich CLI.
 - `SIMULATION.md` documents the data formats, update ordering, persistence,
   and public APIs in more depth.
@@ -62,10 +64,12 @@ political capital, total income, total expenditure, and net balance. The
   effectiveness to the live value, not to saved raw samples.
 - The general effect-ring replay is necessarily a proxy for arbitrary loaded
   saves: the executable restores raw histories and input throttles, but does
-  not serialize every outgoing effect's desired throttle. Targeted
-  policy/simvalue ring residuals therefore remain until that runtime state can
-  be recovered. The captured StateHealthService ring's no-op freeze is
-  reproduced until an explicit order starts that policy's ring.
+  not serialize every outgoing effect's desired throttle. The long-run audit
+  can supply the native checkpoint's serialized effect, hidden, situation,
+  policy-manager, voter-manager, and finance-manager state explicitly; that
+  bridge is audit-only and does not change ordinary simulator runs. The
+  captured StateHealthService ring's no-op freeze is reproduced until an
+  explicit order starts that policy's ring.
 - State snapshots include situations, active situations, hidden global
   neurons and their 33-slot histories, voter histories, party metadata/history rings, full per-voter
   party/sympathy inputs, policy runtime/multiplier fields, delayed policy
@@ -111,14 +115,14 @@ state, finance, situations, hidden values, voters, policy runtime, the
 corpus. `parity_cases/uk_bus_lanes_live.json` records a controlled Xvfb
 capture of a Bus Lanes intervention and its current/target runtime fields.
 
-Both shipped no-op turns now stay inside a mean continuous-state error of
-about 0.003, with a single remaining outlier (`Immigration`, ~0.03): the
-save pair implies `BorderControls -> Immigration` is applied without the
-ministerial scale, and even then a small residual remains because the game's
-unstored random-system state cannot be reproduced. The ring-update rule
-(simvalue/situation rings advance each turn; policy rings wait at target
-changes and then drain with post-update samples) and that calibration are
-described in `SIMULATION.md`.
+Both shipped no-op turns now reproduce all 40 ordinary nodes within 0.001
+(mean errors about 0.00012 and 0.00001). The native executable scales
+`BorderControls -> Immigration` with the active FOREIGNPOLICY minister, while
+its installed equation parser gives `Unemployment -> Immigration` a measured
+−0.06 offset; both observations are data-driven in `calibration.json`. The
+ring-update rule (simvalue/situation rings advance each turn; policy rings
+wait at target changes and then drain with post-update samples) is described
+in `SIMULATION.md`.
 
 ### Long-run native corpus
 
@@ -131,13 +135,22 @@ Every checkpoint passed native-save validation and serialized turns 1–24.
 
 The same unchanged source also has a 128-turn no-order stress chain recorded
 in `gamedrive/MULTI_TERM_TODO.md`; all 128 terminal and intermediate saves
-passed validation, with zero policy-target differences. The completed audit
-now consumes each native checkpoint's serialized minister roster, active
-situations, voter/party/poll state, and effect histories, so election fields,
-active manager rosters, serialized voter fields, and effect histories match
-exactly. The remaining model residuals are bounded at 1,722.2 income, 15,469.3
-expenditure, 0.5883 ordinary-node value, 0.5471 situation value, 0.0600 hidden
-value, and 30.75 hidden-history value.
+passed validation, with zero policy-target differences. The expanded audit
+now feeds each checkpoint's serialized minister roster, active situations,
+grudges, hidden values/histories, voter/party/poll state, effect histories,
+policy-manager runtime, and finance-manager state back into the replay. With
+those explicit checkpoint inputs, situation values, hidden values and
+histories, voter fields, policy runtime, finance totals/debt, and effect
+histories match exactly at all 128 checkpoints.
+
+The audit now also restores each checkpoint's serialized `<simvalues>` before
+continuing. That closes the ordinary checkpoint comparison to zero across all
+128 turns while leaving a pre-bridge model residual in the report: maximum
+0.1156 (turn 54, `PrivateHealthcare`) and mean per-checkpoint maximum about
+0.0940. The persistent `PrivateHealthcare` value is inconsistent with that
+native save's own effect histories, so it remains explicitly marked as a save
+anomaly rather than folded into the normal equation model. The checkpoint
+bridge is audit-only; normal simulator runs remain model-derived.
 
 `gamedrive/term_audit.py` compares the complete offline state at every
 checkpoint. Policy targets are exact across both chains. The long run exposed
@@ -147,9 +160,9 @@ covered by the simulator. Native roster checkpoints take precedence over the
 non-serialized resignation roll. The simulator also models the headless
 election countdown and provides `resolve_election` for explicit vote counting,
 result persistence, term advancement, and player-win loyalty effects.
-Remaining residuals are the global-economy cursor, income-group/situation
-continuous state, and finance accumulation; the audit-only checkpoint bridge
-does not alter ordinary simulator runs.
+The remaining default-path differences are continuous ordinary-node/effect
+state and native save anomalies; the audit-only checkpoint bridge does not
+alter ordinary simulator runs.
 
 Captured order saves are replayed as one native order batch. The order-phase
 finance preview consumes the previous policy-history sample, while a newly
@@ -195,6 +208,55 @@ print("Differences?", comparison.has_differences())
 Use this to validate the simulator against real Democracy 3 saves or to
 bootstrap a simulation from an in-game snapshot.
 
+### Oracle agents
+
+The simulator oracle evaluates a no-op and legal policy moves at every beam
+layer by applying the move and running the actual simulator turn transition.
+It executes only the first action from the winning forecast, then replans from
+the observed state on the next turn:
+
+```python
+from autocracy.agent import SimulatorOracleAgent
+
+agent = SimulatorOracleAgent(
+    beam_width=4,
+    search_horizon=2,
+    candidate_limit=32,
+    objective=lambda state: state.values["GDP"],
+)
+result = agent.search()
+print(result.first_actions, result.score, result.evaluated)
+agent.step()
+```
+
+`candidate_limit=None` makes the simulator search exhaustive. The default
+objective combines GDP, Health, Education, CrimeRate, Unemployment, and poll
+rate; pass `objective` to optimize a different score. Set `random_seed` to
+sample a fresh reproducible subset of candidates at each beam node instead of
+using the deterministic first candidates.
+
+For ground-truth action evaluation, `GameDriveOracleAgent` performs the same
+beam search by launching the native GameDrive probe for every branch and
+parsing each fresh XML save:
+
+```python
+from gamedrive.oracle import GameDriveOracleAgent
+
+native = GameDriveOracleAgent(
+    "oracle_source",
+    beam_width=2,
+    search_horizon=2,
+    candidate_limit=16,
+    random_seed=20260811,
+    objective=lambda save: save.simvalues.get("GDP", 0.0),
+)
+native.step()  # commits the first native save from the winning path
+```
+
+`oracle_source.xml` must be a copied save in the configured native save root;
+build the probe with `make -C gamedrive` first. Native search is intentionally
+expensive and keeps only fresh save artifacts belonging to its winning path.
+
 ### Current parity limits
 
 - The one-pass core now agrees closely with the shipped UK no-op transition,
@@ -210,18 +272,17 @@ bootstrap a simulation from an in-game snapshot.
   separate manager-owned sections and remain less exact than the ordinary DAG.
 - Finance is live-recomputed, including debt interest and the global-interest
   neuron; save parsing also preserves each policy's 20-entry cost/income
-  history ring. The 24-turn audit models the native no-minister competence
-  fallback (`0.25`) and, with deterministic resignations enabled for the
-  quiet chain, reports peak residuals of about 1,737 income / 1,839
-  expenditure there and 1,084 income / 2,053 expenditure for the captured
-  policy chain. The remaining finance error is concentrated around native
-  policy/effect-ring state changes.
-- The remaining continuous-state residuals are concentrated in outgoing
-  effect-ring throttle/load state (including the post-order StateHealth ramp)
-  and the non-serialized global-economy random cursor. The current model
-  retains the evidence-backed ring freeze, one-pass policy delay, and
-  pre-policy source ordering documented in `SIMULATION.md`; the finance
-  trade-off is measured in `parity_cases/DRASH_NOTES.md`.
+  history ring. The expanded 128-turn audit restores the serialized
+  finance-manager runtime at each checkpoint, closing the long-run finance
+  comparison to zero. That restoration is explicit audit input; normal
+  simulator runs still calculate finance from their own state.
+- The remaining continuous-state model residuals are concentrated in ordinary
+  effect-source state (including late `CrimeRate`, `RacialTension`, and
+  `PovertyRate` channels) and in native save values that contradict their own
+  serialized inputs. The audit uses the serialized simvalue checkpoint bridge
+  to prevent those unstored native cursors from cascading into later turns;
+  the normal simulator still retains the evidence-backed ring freeze, one-pass
+  policy delay, and pre-policy source ordering documented in `SIMULATION.md`.
 - Base party/sympathy membership transitions now use the binary-confirmed
   approval transform, simconfig thresholds, party-type lookup, and serialized
   member-count history; the serialized activist ring also advances with its

@@ -1,17 +1,17 @@
 {
   "comment": "Data-driven calibration for the simulator proxy. Every entry here is a documented parity fit; changing these lets a different country/gamedata set be reproduced without editing code. Keys 'A -> B' name effect source/target pairs.",
   "effect_scale": {
-    "BorderControls -> Immigration": "implementation",
     "CitizenshipTests -> Immigration": "unscaled"
   },
-  "effect_applicability": {
-    "CitizenshipTests -> Immigration": "always"
+  "effect_offsets": {
+    "Unemployment -> Immigration": -0.06
   },
   "minister_fallback": {
     "competence": 0.25
   },
   "frozen_rings": {
-    "StateSchools -> Education": true
+    "StateSchools -> Education": true,
+    "PrivateSchools -> Education": true
   },
   "frozen_until_order": {
     "StateHealthService -> Health": true

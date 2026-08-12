@@ -100,20 +100,25 @@ the post-fix residuals are recorded separately.
       player-win minister loyalty.
 - [x] Use serialized native minister rosters and active-situation schedules as
       explicit audit inputs, keeping the default simulator deterministic.
+- [x] Restore serialized grudge records, hidden values/histories, and situation
+      latents at the same neural-pass boundary as the native turn.
 - [x] Restore serialized voter/party/poll checkpoints and effect-history rings
       during the long-horizon audit; fix prior-turn voter snapshot aliasing.
+- [x] Restore serialized policy-manager runtime and finance/debt histories as
+      explicit audit inputs, keeping normal simulator runs state-derived.
 - [x] Add focused regression coverage for election transitions, roster
       removal, idless effect-history matching, and immutable prior snapshots.
-- [x] Re-run the complete 128-turn audit and document the residuals that remain
-      in the finance, income-group, situation, and hidden-state model.
+- [x] Re-run the complete 128-turn audit and isolate the remaining ordinary
+      node residuals from serialized-manager parity.
 - [x] Commit and push the closure batch with synchronized README, simulator,
       and gamedrive documentation.
 
-The post-fix 128-turn audit has zero election countdown/current-term deltas,
+The expanded 128-turn audit has zero election countdown/current-term deltas,
 zero active-roster and active-situation membership differences, exact
-serialized voter fields, and zero effect-history delta. The remaining maximum
-absolute residuals are 1,722.2 income, 15,469.3 expenditure, 0.5883 ordinary
-node value (`_MiddleIncome`), 0.5471 situation value, 0.0600 hidden-node value,
-and 30.75 hidden-history value. At turn 128 the signed finance residual is
-about +1,543.2 income / −15,469.3 expenditure; these are model residuals, not
-missing serialized manager state.
+serialized simvalues, grudges, hidden values/histories, voter fields, policy
+runtime, finance/debt fields, and effect histories. The pre-overlay model
+envelope is 0.115600 at turn 54 (`PrivateHealthcare`), with a mean
+per-checkpoint maximum of about 0.0940. That `PrivateHealthcare` discrepancy
+conflicts with the save's own serialized effect histories and is tracked as a
+native save anomaly. The serialized simvalue checkpoint schedule is audit-only
+and is not used by ordinary simulator runs.
