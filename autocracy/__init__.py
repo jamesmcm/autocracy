@@ -17,7 +17,10 @@ from .simulator import (
     load_state,
     process_end_of_turn,
     recompute_effects,
+    forecast_election,
+    forecast_election_from_voters,
     resolve_election,
+    resolve_election_if_ready,
     save_state,
     state_from_dict,
     state_to_dict,
@@ -28,11 +31,21 @@ from .savegame import (
     parse_savegame,
     state_from_savegame,
 )
-from .agent import BaseAgent, OracleAgent, PassiveAgent, SimulatorOracleAgent
+from .agent import (
+    BaseAgent,
+    ElectionOracleAgent,
+    OracleAgent,
+    PassiveAgent,
+    SimulatorOracleAgent,
+)
+from .models import ElectionForecast
 from .oracle import (
     DEFAULT_ORACLE_WEIGHTS,
+    OracleElectionLoss,
     OracleSearchResult,
     score_savegame,
+    score_savegame_election,
+    score_election_state,
     score_simulation_state,
 )
 
@@ -51,7 +64,10 @@ __all__ = [
     "load_state",
     "process_end_of_turn",
     "recompute_effects",
+    "forecast_election",
+    "forecast_election_from_voters",
     "resolve_election",
+    "resolve_election_if_ready",
     "save_state",
     "state_from_dict",
     "state_to_dict",
@@ -63,8 +79,13 @@ __all__ = [
     "PassiveAgent",
     "OracleAgent",
     "SimulatorOracleAgent",
+    "ElectionOracleAgent",
+    "ElectionForecast",
     "DEFAULT_ORACLE_WEIGHTS",
+    "OracleElectionLoss",
     "OracleSearchResult",
     "score_savegame",
+    "score_savegame_election",
+    "score_election_state",
     "score_simulation_state",
 ]

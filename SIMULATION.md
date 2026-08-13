@@ -144,9 +144,25 @@ Common behavioural patterns handled correctly:
      interval at `term_length - 1`. The headless worker does not invoke the GUI
      result screen, so it does not change the current term. Call
      `resolve_election(state, data=None)` when the countdown is zero to count
-     party and sympathy votes, persist the result and vote totals, increment
-     the term, reset the countdown, and apply the native player-win loyalty
-     boost.
+     native-style expected turnout, persist a deterministic rounded result and
+     vote totals, increment the term, reset the countdown, and apply the
+     native player-win loyalty boost. `forecast_election(state)` exposes the
+     unrounded player/opposition/absent expectation used by election oracles;
+     `resolve_election_if_ready` is the no-op-safe bridge used by the oracle
+     agents at every observed boundary.
+
+In a corrected UK simulator experiment (seed `20260813`, beam 6, horizon 5,
+two actions per turn, 16 sampled candidates, 64 legal batches, and a
+15-second operational budget per decision), the passive control lost its first
+election at turn 16 with 26 player / 1,142 opposition / 832 absent and a 6.05%
+poll. The election oracle recovered from a lagged turn-5 dip, crossed to a
+positive expected margin at turn 13, and won the first election with 865 player
+/ 281 opposition / 854 absent and an 81.85% poll. A full-roster 120-second
+search selected the same first batch (`TelecommutingInitiative` plus
+`FoodStamps`) and completed two lookahead layers after 589 simulator branches.
+The production example uses the same search with a 600-second wall-clock
+budget; beam states are retained incrementally so a long search does not grow
+memory with every discarded voter population.
 
 4. **Random Systems** (`SimulationConfig`):
    - `process_events`, `process_dilemmas`, `process_attacks` and the
@@ -325,32 +341,46 @@ uv run main.py actions --country uk -p IncomeTax:-0.05
 `PassiveAgent` inherits from the base scaffold and simply never spends political capital; real agents can override `choose_actions` to implement policies or learned behaviour.
 
 `SimulatorOracleAgent` is a best-case beam-search implementation. At each
-depth it evaluates a no-op and legal single-step policy moves by calling
-`apply_actions` followed by the real `process_end_of_turn` transition. The
-winning plan is ranked by a caller-supplied `objective(state)` (the default
-combines headline metrics and poll rate), but only its first-turn actions are
-returned; the agent replans from the resulting observed state. `beam_width`
-controls retained branches, `search_horizon` controls forecast turns, and
-`candidate_limit=None` enables exhaustive action enumeration. The default
-candidate limit keeps the expensive UK action roster practical. Supplying a
-`random_seed` samples that many legal policy options without replacement at
-each beam node, giving a reproducible Monte-Carlo/beam hybrid across long
-runs; without a seed, bounded selection is deterministic.
+depth it evaluates a no-op and legal policy-action batches by calling
+`apply_actions` followed by the real `process_end_of_turn` transition and
+`resolve_election_if_ready` boundary. The winning plan is ranked by a
+caller-supplied `objective(state)` (the default combines headline metrics and
+poll rate), but only its first-turn batch is returned; the agent replans from
+the resulting observed state. `beam_width` controls retained branches,
+`search_horizon` controls forecast turns (`None` means the next election),
+`candidate_limit=None` enables exhaustive single-option enumeration, and
+`max_actions_per_turn`/`batch_candidate_limit` control legal combinations in a
+turn. Supplying a `random_seed` samples the bounded policy roster without
+replacement at each beam node, giving a reproducible Monte-Carlo/beam hybrid
+across long runs; without a seed, bounded selection is deterministic.
+`time_budget_seconds` can stop a large search at a wall-clock deadline; the
+result reports `timed_out`, `completed_depth`, and `elapsed_seconds` and still
+contains a safe first-turn simulator transition.
+
+An election loss is terminal: losing branches are removed from the beam, and
+`OracleElectionLoss` is raised if no legal continuation can win the pending
+election. The native oracle applies the same rule after parsing each real XML
+turn. Because headless GameDrive leaves the result screen unresolved, its
+temporary branch save is updated with the new term/countdown and per-voter vote
+enums before it is used as a parent for a later native turn.
 
 ```python
-from autocracy.agent import SimulatorOracleAgent
+from autocracy.agent import ElectionOracleAgent
 
-agent = SimulatorOracleAgent(
-    beam_width=4,
-    search_horizon=2,
-    random_seed=20260811,
-    objective=lambda state: state.values["GDP"] - state.values["CrimeRate"],
+agent = ElectionOracleAgent(
+    beam_width=6,
+    search_horizon=None,
+    candidate_limit=64,
+    max_actions_per_turn=2,
+    batch_candidate_limit=256,
+    time_budget_seconds=600,
 )
 result = agent.search()
 agent.step()
 ```
 
-`gamedrive.oracle.GameDriveOracleAgent` has the same result/beam semantics but
+`gamedrive.oracle.GameDriveOracleAgent` has the same result/beam/batch
+semantics but
 uses `gamedrive/inject_drive.py` for every branch. It loads a real save, sends
 the native order through the installed Democracy 3 binary, parses the fresh
 XML output, and uses that output as the next branch state. This is the
@@ -359,6 +389,8 @@ already be present in the configured save root and the version-pinned probe
 must be built. Its default `candidate_limit` is 16; use `None` for exhaustive
 native enumeration. Its `random_seed` option has the same reproducible
 candidate-sampling behavior as the simulator agent.
+`ElectionGameDriveOracleAgent` selects the matching full-term election-margin
+objective for native validation.
 
 Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 

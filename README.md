@@ -210,10 +210,10 @@ bootstrap a simulation from an in-game snapshot.
 
 ### Oracle agents
 
-The simulator oracle evaluates a no-op and legal policy moves at every beam
-layer by applying the move and running the actual simulator turn transition.
-It executes only the first action from the winning forecast, then replans from
-the observed state on the next turn:
+The simulator oracle evaluates a no-op and legal policy-action batches at every
+beam layer by applying the batch and running the actual simulator turn
+transition. It executes only the first batch from the winning forecast, then
+replans from the observed state on the next turn:
 
 ```python
 from autocracy.agent import SimulatorOracleAgent
@@ -233,7 +233,37 @@ agent.step()
 objective combines GDP, Health, Education, CrimeRate, Unemployment, and poll
 rate; pass `objective` to optimize a different score. Set `random_seed` to
 sample a fresh reproducible subset of candidates at each beam node instead of
-using the deterministic first candidates.
+using the deterministic first candidates. `max_actions_per_turn` enables
+multi-policy batches, and `batch_candidate_limit=None` enumerates every legal
+combination of the selected options.
+
+`time_budget_seconds` is a wall-clock search budget. When it expires, the
+agent returns the best branch completed so far (or a safe no-op fallback) and
+records `timed_out`, `completed_depth`, and `elapsed_seconds` on the result.
+
+For an election-focused best-case baseline, `ElectionOracleAgent` searches to
+the next election by default, uses the expected native-style turnout model,
+and scores the expected player-minus-opposition vote margin:
+
+```python
+from autocracy.agent import ElectionOracleAgent
+
+election_oracle = ElectionOracleAgent(
+    beam_width=6,
+    search_horizon=None,       # full remaining term
+    candidate_limit=64,
+    max_actions_per_turn=2,
+    batch_candidate_limit=256,
+    time_budget_seconds=600,
+)
+result = election_oracle.search()
+print(result.first_actions, result.score, result.evaluated)
+```
+
+The native `CastVote` path samples turnout before choosing a candidate. The
+simulator exposes `forecast_election(state)` so the oracle optimizes expected
+votes rather than one arbitrary random draw; `resolve_election` rounds that
+expectation deterministically for reproducible experiments.
 
 For ground-truth action evaluation, `GameDriveOracleAgent` performs the same
 beam search by launching the native GameDrive probe for every branch and
@@ -253,9 +283,21 @@ native = GameDriveOracleAgent(
 native.step()  # commits the first native save from the winning path
 ```
 
+`ElectionGameDriveOracleAgent` provides the matching native election-margin
+configuration (`search_horizon=None`, wider beam, two-action batches, and
+`score_savegame_election`). It is useful for validating the simulator oracle,
+but every native branch launches the real executable and is consequently much
+slower.
+
 `oracle_source.xml` must be a copied save in the configured native save root;
 build the probe with `make -C gamedrive` first. Native search is intentionally
 expensive and keeps only fresh save artifacts belonging to its winning path.
+Both oracle paths resolve a pending election at the zero-countdown boundary
+and discard branches that lose. If no searched branch survives, they raise
+`OracleElectionLoss` instead of continuing a campaign after the game has
+ended. The native path persists the resolved term/countdown and voter vote
+enums into its temporary winning checkpoint before launching another branch;
+the original source save is left untouched.
 
 ### Current parity limits
 

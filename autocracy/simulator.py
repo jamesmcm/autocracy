@@ -17,6 +17,7 @@ from .models import (
     BudgetModifier,
     Effect,
     EffectHistory,
+    ElectionForecast,
     Grudge,
     NodeDefinition,
     PolicyAction,
@@ -420,6 +421,16 @@ def _validate_expression(node: ast.AST) -> None:
         _validate_expression(child)
 
 
+@lru_cache(maxsize=4096)
+def _compiled_expression(expression: str):
+    """Parse and validate one data-file expression once per process."""
+
+    sanitized = _sanitize_expression(expression.strip())
+    tree = ast.parse(sanitized, mode="eval")
+    _validate_expression(tree)
+    return compile(tree, "<effect>", "eval")
+
+
 def evaluate_expression(
     expression: str, x: float, context: Optional[Dict[str, float]] = None
 ) -> float:
@@ -427,13 +438,10 @@ def evaluate_expression(
 
     if not expression:
         return 0.0
-    sanitized = _sanitize_expression(expression.strip())
-    tree = ast.parse(sanitized, mode="eval")
-    _validate_expression(tree)
+    code = _compiled_expression(expression)
     allowed_names = {"x": x, **ALLOWED_FUNCS}
     if context:
         allowed_names.update(context)
-    code = compile(tree, "<effect>", "eval")
     return float(eval(code, {"__builtins__": {}}, allowed_names))
 
 
@@ -3488,8 +3496,17 @@ def resolve_election(
     The headless native capture path stops at the zero countdown and leaves
     ``currentterm`` and ``lastvote`` unchanged.  A real result is a separate
     election-manager operation, so callers invoke this function explicitly.
-    Votes use the serialized party membership first, then sympathy for
-    currently unaligned voters; voters without a clear preference abstain.
+
+    Native ``SIM_Voter::CastVote`` first samples a turnout chance and only
+    then chooses a candidate from the voter's calculated approval.  The old
+    simulator treated every party member as a certain vote and every
+    unaffiliated voter as an abstention, which made an election result depend
+    on party membership rather than the game's turnout model.  This resolver
+    uses the same expected turnout calculation as :func:`forecast_election`
+    and rounds the expected population into deterministic vote enums.  The
+    rounding makes simulator searches reproducible; the oracle objective uses
+    the unrounded forecast so it does not optimize a rounding accident.
+
     Native vote enums are retained as ``0`` (player), ``1`` (opposition), and
     ``2`` (absent), matching ``SIM_Voter::CastVote``.
     """
@@ -3497,36 +3514,19 @@ def resolve_election(
     if state.election_turns_until != 0:
         raise ValueError("election is not ready to resolve")
 
-    player_party = next(
-        (party.name for party in state.parties.values() if party.party_type == 0),
-        None,
+    expectations = _election_voter_expectations(state.voters, state.parties)
+    player_votes, opposition_votes, absent_votes = _rounded_election_counts(
+        expectations
     )
-    opposition_party = next(
-        (party.name for party in state.parties.values() if party.party_type == 1),
-        None,
+    assignments = _deterministic_election_assignments(
+        expectations,
+        player_votes=player_votes,
+        opposition_votes=opposition_votes,
     )
-    player_votes = 0
-    opposition_votes = 0
-    absent_votes = 0
-    counted_voters: list[Voter] = []
-    for voter in state.voters:
-        if player_party is not None and voter.party == player_party:
-            vote = 0
-        elif opposition_party is not None and voter.party == opposition_party:
-            vote = 1
-        elif voter.player_sympathy > voter.opposition_sympathy and voter.player_sympathy >= 0.5:
-            vote = 0
-        elif voter.opposition_sympathy > voter.player_sympathy and voter.opposition_sympathy >= 0.5:
-            vote = 1
-        else:
-            vote = 2
-        if vote == 0:
-            player_votes += 1
-        elif vote == 1:
-            opposition_votes += 1
-        else:
-            absent_votes += 1
-        counted_voters.append(replace(voter, last_vote=vote))
+    counted_voters = [
+        replace(voter, last_vote=vote)
+        for voter, vote in zip(state.voters, assignments)
+    ]
 
     winner = "player" if player_votes > opposition_votes else "opposition"
     loyalties = state.ministerial_loyalty.copy()
@@ -3548,6 +3548,226 @@ def resolve_election(
         election_absent_votes=absent_votes,
         ministerial_loyalty=loyalties,
     )
+
+
+def forecast_election(state: SimulationState) -> ElectionForecast:
+    """Return the expected native-style election result for ``state``.
+
+    The executable stores the voter's base approval and a voting-technology
+    input, but its live party-manager popularity and several perception
+    modifiers are not serialized.  The forecast therefore uses the
+    high-confidence native pieces directly and uses current live party share
+    as the serialized-state proxy for the missing popularity field.  It is an
+    expected-value baseline, not a claim that a particular random election
+    draw will equal these fractional counts.
+    """
+
+    return _forecast_election_voters(state.voters, state.parties)
+
+
+def forecast_election_from_voters(
+    voters: Sequence[Voter],
+    parties: Mapping[str, PartyState],
+) -> ElectionForecast:
+    """Forecast an election from voter/party records without a full state.
+
+    This is used by the native GameDrive oracle, whose objective receives a
+    parsed XML save while its transition state is kept separately.
+    """
+
+    return _forecast_election_voters(voters, parties)
+
+
+def _forecast_election_voters(
+    voters: Sequence[Voter],
+    parties: Mapping[str, PartyState],
+) -> ElectionForecast:
+    expectations = _election_voter_expectations(voters, parties)
+    return ElectionForecast(
+        expected_player_votes=_f32(
+            sum(player for player, _, _ in expectations)
+        ),
+        expected_opposition_votes=_f32(
+            sum(opposition for _, opposition, _ in expectations)
+        ),
+        expected_absent_votes=_f32(sum(absent for _, _, absent in expectations)),
+    )
+
+
+def _election_voter_expectations(
+    voters: Sequence[Voter],
+    parties: Mapping[str, PartyState],
+) -> list[tuple[float, float, float]]:
+    """Return ``(player, opposition, absent)`` expectations per voter."""
+
+    if not voters:
+        return []
+    recognized_parties = {
+        name: party for name, party in parties.items() if name
+    }
+    party_counts = {
+        name: sum(1 for voter in voters if voter.party == name)
+        for name in recognized_parties
+    }
+    population = float(len(voters))
+    party_shares = {
+        name: count / population for name, count in party_counts.items()
+    }
+    party_types = {
+        name: party.party_type for name, party in recognized_parties.items()
+    }
+    expectations: list[tuple[float, float, float]] = []
+    for voter in voters:
+        party = recognized_parties.get(voter.party)
+        approval = _clamp(_f32((_f32(voter.value) + 1.0) * 0.5), 0.0, 1.0)
+        preference = _election_preference(voter, party, approval)
+        turnout = _election_turnout(
+            voter,
+            party,
+            approval,
+            party_shares,
+            party_types,
+        )
+        if preference == "player":
+            expectations.append((turnout, 0.0, 1.0 - turnout))
+        else:
+            expectations.append((0.0, turnout, 1.0 - turnout))
+    return expectations
+
+
+def _election_preference(
+    voter: Voter,
+    party: PartyState | None,
+    approval: float,
+) -> str:
+    """Approximate the native post-turnout candidate choice.
+
+    ``SIM_Voter::CastVote`` calls ``CalculateApproval`` and then applies the
+    same neutral approval threshold for both recognized parties and
+    unaffiliated voters.  Party membership changes ``CalculateVoteChance``
+    (turnout), but it does not force an opposition-party member to cast an
+    opposition ballot.  ``party`` and ``voter`` stay in the signature to make
+    that distinction explicit and to leave room for future serialized
+    approval modifiers.
+    """
+
+    return "player" if approval >= 0.5 else "opposition"
+
+
+def _election_turnout(
+    voter: Voter,
+    party: PartyState | None,
+    approval: float,
+    party_shares: Mapping[str, float],
+    party_types: Mapping[str, int],
+) -> float:
+    """Calculate the expected turnout probability from native inputs.
+
+    Static inspection of ``SIM_Voter::CalculateVoteChance`` shows three
+    important branches: recognized party members are assigned chance one;
+    unaffiliated voters combine twice their distance from neutral approval,
+    voting technology, and party popularity; and the result is scaled by
+    ``0.2`` and clamped to ``[0, 1]``.  Party popularity is not serialized, so
+    the current party share is the deliberately explicit approximation here.
+    Strong serialized sympathy is treated as a live party commitment for
+    hand-built states that have not run the membership manager yet.
+    """
+
+    if party is not None:
+        return 1.0
+    if max(voter.player_sympathy, voter.opposition_sympathy) >= 0.5:
+        return 1.0
+    player_share = max(
+        (
+            share
+            for name, share in party_shares.items()
+            if name and party_types.get(name) == 0
+        ),
+        default=0.0,
+    )
+    opposition_share = max(
+        (
+            share
+            for name, share in party_shares.items()
+            if name and party_types.get(name) == 1
+        ),
+        default=0.0,
+    )
+    popularity = opposition_share if approval < 0.5 else player_share
+    distance = 2.0 * abs(approval - 0.5)
+    technology = _clamp(voter.voting_tech, 0.0, 1.0)
+    return _clamp(
+        _f32(0.2 * (distance + technology + popularity)),
+        0.0,
+        1.0,
+    )
+
+
+def _rounded_election_counts(
+    expectations: Sequence[tuple[float, float, float]],
+) -> tuple[int, int, int]:
+    """Round three expected counts while preserving the population total."""
+
+    totals = [
+        sum(values[index] for values in expectations)
+        for index in range(3)
+    ]
+    floors = [math.floor(value) for value in totals]
+    remaining = len(expectations) - sum(floors)
+    fractions = [value - floor for value, floor in zip(totals, floors)]
+    for index in sorted(range(3), key=lambda item: (-fractions[item], item))[
+        :remaining
+    ]:
+        floors[index] += 1
+    return floors[0], floors[1], floors[2]
+
+
+def _deterministic_election_assignments(
+    expectations: Sequence[tuple[float, float, float]],
+    *,
+    player_votes: int,
+    opposition_votes: int,
+) -> list[int]:
+    """Choose modal voter outcomes that realize rounded expected totals."""
+
+    player_candidates = sorted(
+        (
+            index
+            for index, (player, _, _) in enumerate(expectations)
+            if player > 0.0
+        ),
+        key=lambda index: (-expectations[index][0], index),
+    )
+    opposition_candidates = sorted(
+        (
+            index
+            for index, (_, opposition, _) in enumerate(expectations)
+            if opposition > 0.0
+        ),
+        key=lambda index: (-expectations[index][1], index),
+    )
+    assignments = [2] * len(expectations)
+    for index in player_candidates[:player_votes]:
+        assignments[index] = 0
+    for index in opposition_candidates[:opposition_votes]:
+        assignments[index] = 1
+    return assignments
+
+
+def resolve_election_if_ready(
+    state: SimulationState,
+    data: Optional[SimulationData] = None,
+) -> SimulationState:
+    """Resolve a pending election, leaving ordinary turns unchanged.
+
+    The native turn worker serializes the boundary with a zero countdown and
+    does not show the result screen in headless mode.  Oracle agents use this
+    bridge immediately after each observed turn so a search cannot continue
+    through an unresolved election.
+    """
+    if state.election_turns_until != 0:
+        return state
+    return resolve_election(state, data=data)
 
 
 def _run_stochastic_systems(

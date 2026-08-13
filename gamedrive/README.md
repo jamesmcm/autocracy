@@ -276,11 +276,15 @@ Memory edits are intentionally limited to `--skip-turn`.
 ## Native oracle agent
 
 `gamedrive/oracle.py` exposes `GameDriveOracleAgent` for best-case policy
-search against the real executable. Each candidate is run as an isolated
-native turn from a fresh save name, scored from the resulting parsed XML, and
-then retained in the beam. The first save in the winning path is committed by
-`agent.step()`; later forecast saves are never substituted for observed game
-state.
+search against the real executable. Each candidate batch is run as an
+isolated native turn from a fresh save name, scored from the resulting parsed
+XML, and then retained in the beam. The first save in the winning path is
+committed by `agent.step()`; later forecast saves are never substituted for
+observed game state. At a zero election countdown it resolves the vote through
+the shared simulator election model, discards a losing branch, and writes the
+resolved term/countdown and voter vote enums into the temporary native
+checkpoint before continuing the search. If every candidate loses, it raises
+`OracleElectionLoss` rather than continuing after a game-ending result.
 
 ```python
 from gamedrive.oracle import GameDriveOracleAgent
@@ -297,6 +301,13 @@ result = agent.search()
 print(result.first_actions, result.score, result.evaluated)
 agent.step()
 ```
+
+`ElectionGameDriveOracleAgent` is the matching full-term election baseline. It
+uses `score_savegame_election`, allows two policy orders per turn, and defaults
+to the next election horizon; set `candidate_limit` and
+`batch_candidate_limit` to bound the otherwise very large native search.
+`time_budget_seconds` applies the same wall-clock cutoff and result telemetry
+as the simulator agent.
 
 `oracle_source.xml` must be a copied input in the native save directory. The
 default native runner is the synchronous `inject_drive.run` path, so build the
@@ -401,9 +412,11 @@ and remains marked as a save anomaly. Checkpoint schedules are audit-only; the
 default simulator still runs without native state injection.
 
 The election model mirrors the headless native worker's countdown, then
-`autocracy.simulator.resolve_election` explicitly counts party/sympathy votes,
-records win/loss and vote totals, advances the term, resets the countdown, and
-applies the player-win minister-loyalty boost.
+`autocracy.simulator.resolve_election` explicitly applies the native-style
+expected turnout model, records a deterministic rounded win/loss and vote
+totals, advances the term, resets the countdown, and applies the player-win
+minister-loyalty boost. `forecast_election` retains the unrounded expectation
+used for election-margin search.
 
 ### Fresh intervention rollout
 

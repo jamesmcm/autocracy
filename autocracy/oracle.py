@@ -18,6 +18,24 @@ from .savegame import SaveGame
 
 StateT = TypeVar("StateT")
 
+
+class OracleElectionLoss(RuntimeError):
+    """Raised when no searched branch survives an election.
+
+    An election loss is terminal for a playable campaign.  Keeping the
+    resolved state on the exception lets experiment runners report the vote
+    totals without treating a continuation after the loss as a valid game.
+    """
+
+    def __init__(self, state: SimulationState) -> None:
+        self.state = state
+        super().__init__(
+            "oracle branch lost the election: "
+            f"{state.election_player_votes} player votes, "
+            f"{state.election_opposition_votes} opposition votes, "
+            f"{state.election_absent_votes} abstentions"
+        )
+
 # These are intentionally normalized, headline metrics.  Callers should pass
 # an objective when the task has a different definition of "best" (for
 # example, maximize GDP while keeping expenditure below a limit).
@@ -48,6 +66,16 @@ class OracleSearchResult(Generic[StateT]):
     evaluated: int
     first_artifact: str | None = None
     artifacts: tuple[str, ...] = ()
+    # Native XML does not serialize the result-screen-only vote totals.  The
+    # native oracle fills this with the resolved Python runtime state so a
+    # committed boundary remains observable to its caller.
+    first_runtime_state: SimulationState | None = None
+    # Search-budget telemetry.  A time-limited oracle may return the best
+    # branch from a partially completed depth; the first move is still a real
+    # simulator/native transition and is safe to commit.
+    elapsed_seconds: float = 0.0
+    completed_depth: int = 0
+    timed_out: bool = False
 
     @property
     def first_actions(self) -> tuple[PolicyAction, ...]:
@@ -83,6 +111,26 @@ def score_simulation_state(
     )
 
 
+def score_election_state(state: SimulationState) -> float:
+    """Score a simulator state by expected first-election vote margin.
+
+    A completed win receives a large bonus so a search that reaches the
+    election boundary prefers survival over a slightly better economic
+    intermediate state.  Before the boundary, the score is the native-style
+    expected player-minus-opposition margin and therefore gives the beam a
+    useful gradient instead of rewarding a generic GDP/poll composite.
+    """
+
+    from .simulator import forecast_election
+
+    if state.election_result in {"win", "loss"}:
+        margin = float(
+            state.election_player_votes - state.election_opposition_votes
+        )
+        return margin + (1_000_000.0 if state.election_result == "win" else -1_000_000.0)
+    return forecast_election(state).margin
+
+
 def score_savegame(
     save: SaveGame,
     *,
@@ -97,6 +145,14 @@ def score_savegame(
         weights=weights,
         poll_weight=poll_weight,
     )
+
+
+def score_savegame_election(save: SaveGame) -> float:
+    """Score a native XML state by its expected first-election margin."""
+
+    from .simulator import forecast_election_from_voters
+
+    return forecast_election_from_voters(save.voters, save.parties).margin
 
 
 def validate_score(objective: Callable[[StateT], float], state: StateT) -> float:

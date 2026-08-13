@@ -230,6 +230,47 @@ class PartyState:
     activist_history: List[int] = field(default_factory=list)
 
 
+@dataclass(frozen=True, slots=True)
+class ElectionForecast:
+    """Expected result of the native-style voter turnout model.
+
+    Democracy 3 samples turnout independently for each voter.  A simulator
+    oracle should not make a lucky random draw part of its objective, so this
+    record keeps the expected counts instead.  The three values sum to the
+    population size (up to floating-point round-off); ``margin`` is the
+    expected player-vs-opposition vote margin.
+    """
+
+    expected_player_votes: float
+    expected_opposition_votes: float
+    expected_absent_votes: float
+
+    @property
+    def margin(self) -> float:
+        """Expected player vote margin over the opposition."""
+
+        return self.expected_player_votes - self.expected_opposition_votes
+
+    @property
+    def expected_turnout(self) -> float:
+        """Expected number of voters casting either candidate vote."""
+
+        return self.expected_player_votes + self.expected_opposition_votes
+
+    @property
+    def player_share(self) -> float:
+        """Expected player share among all voters."""
+
+        total = self.expected_player_votes + self.expected_opposition_votes
+        return self.expected_player_votes / total if total else 0.0
+
+    @property
+    def winner(self) -> str:
+        """The candidate with the higher expected vote total."""
+
+        return "player" if self.margin > 0.0 else "opposition"
+
+
 @dataclass(slots=True)
 class SimulationState:
     """Mutable per-turn state for a single country."""

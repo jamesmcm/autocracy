@@ -317,13 +317,43 @@ def test_resolve_election_counts_votes_and_starts_new_term():
 
     assert result.election_result == "win"
     assert result.last_election_winner == "player"
-    assert result.election_player_votes == 2
-    assert result.election_opposition_votes == 1
+    assert result.election_player_votes == 3
+    assert result.election_opposition_votes == 0
     assert result.election_absent_votes == 0
     assert result.election_current_term == 1
     assert result.election_turns_until == 16
-    assert [v.last_vote for v in result.voters] == [0, 1, 0]
+    assert [v.last_vote for v in result.voters] == [0, 0, 0]
     assert result.ministerial_loyalty["TAX"] == pytest.approx(0.62)
+
+
+def test_election_forecast_models_turnout_for_unaffiliated_voters():
+    state, _ = simulator.get_initial_state("uk")
+    state = replace(
+        state,
+        parties={
+            "Player": PartyState("Player", party_type=0),
+            "Opposition": PartyState("Opposition", party_type=1),
+        },
+        voters=[
+            Voter(party="Player"),
+            Voter(party="Opposition"),
+            Voter(value=0.0, voting_tech=0.8),
+            Voter(value=-1.0, voting_tech=0.8),
+        ],
+    )
+
+    forecast = simulator.forecast_election(state)
+
+    assert forecast.expected_player_votes == pytest.approx(2.21)
+    assert forecast.expected_opposition_votes == pytest.approx(0.41)
+    assert forecast.expected_absent_votes == pytest.approx(1.38)
+    assert forecast.margin == pytest.approx(1.8)
+    assert forecast.winner == "player"
+
+    resolved = simulator.resolve_election(
+        replace(state, election_turns_until=0),
+    )
+    assert [v.last_vote for v in resolved.voters] == [0, 0, 2, 1]
 
 
 def test_native_manager_roster_can_remove_all_missing_departments():
