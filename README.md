@@ -51,6 +51,8 @@ political capital, total income, total expenditure, and net balance. The
   scaffold and the simulator-backed beam-search oracle.
 - `autocracy/timeseries.py` provides the fixed-schema autoregressive context,
   CPU baselines, and optional Chronos2 backend boundary for action forecasts.
+- `TIMESERIES.md` documents the forecast input contract, trace format, and
+  fair comparison protocol for CPU and GPU-backed models.
 - `autocracy/savegame.py` parses Democracy 3 XML saves and compares simulator
   output against real snapshots.
 - `gamedrive/oracle.py` provides a native beam-search oracle that evaluates
@@ -332,6 +334,9 @@ baselines. `Chronos2Forecaster.from_callable(...)` accepts a later GPU-backed
 Chronos2 predictor using the same `ForecastModelInput`; no model weights are
 downloaded by this repository. Each trace records predictions and the actual
 next state, including one-step mean absolute error for later model comparison.
+
+See [`TIMESERIES.md`](TIMESERIES.md) for the full input contract, trace
+schema, Chronos2 integration boundary, and evaluation recommendations.
 
 ### Current parity limits
 

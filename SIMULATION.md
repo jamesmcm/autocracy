@@ -418,6 +418,9 @@ The trace contains each predicted trajectory, selected action, actual next
 state, and one-step mean absolute error, so persistence, empirical, and
 Chronos2 runs can be compared over the same observed episode.
 
+See [`TIMESERIES.md`](TIMESERIES.md) for the complete model-input contract,
+trace schema, and GPU handoff protocol.
+
 Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 
 | Function | Description |
