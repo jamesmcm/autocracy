@@ -356,6 +356,25 @@ def test_election_forecast_models_turnout_for_unaffiliated_voters():
     assert [v.last_vote for v in resolved.voters] == [0, 0, 2, 1]
 
 
+def test_election_result_is_cleared_on_the_next_term_turn():
+    data = simulator.load_simulation_data()
+    state, graph = simulator.get_initial_state("uk")
+    state = replace(
+        state,
+        election_turns_until=0,
+        parties={"Player": PartyState("Player", party_type=0)},
+        voters=[Voter(party="Player")],
+    )
+
+    resolved = simulator.resolve_election(state, data)
+    advanced = simulator.process_end_of_turn(resolved, graph, data=data)
+
+    assert resolved.election_result == "win"
+    assert advanced.election_result is None
+    assert advanced.last_election_winner == "player"
+    assert advanced.election_current_term == 1
+
+
 def test_native_manager_roster_can_remove_all_missing_departments():
     state, _ = simulator.get_initial_state("uk")
     state = simulator.apply_native_manager_roster(state, {"ECONOMY"})

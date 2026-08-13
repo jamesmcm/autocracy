@@ -3257,6 +3257,14 @@ def process_end_of_turn(
             runtime_state.values.get("_global_interest_rates_", 0.5),
         ),
     )
+    # ``election_result`` describes the result-screen event at the boundary,
+    # not a permanent objective state.  Keep it observable on the resolved
+    # state, then clear it on the first ordinary turn of the new term so a
+    # multi-term oracle scores the next election from its live forecast rather
+    # than reusing the previous term's vote margin.
+    election_result = (
+        None if runtime_state.election_result in {"win", "loss"} else runtime_state.election_result
+    )
     # The native event/dilemma/pressure managers run before the neural-effect
     # vector.  Their CreateGrudge calls must therefore feed this same turn's
     # node calculation, not the already-completed snapshot.  A supplied
@@ -3422,7 +3430,7 @@ def process_end_of_turn(
         },
         election_turns_until=election_turns_until,
         election_current_term=runtime_state.election_current_term,
-        election_result=runtime_state.election_result,
+        election_result=election_result,
         last_election_winner=runtime_state.last_election_winner,
         election_player_votes=runtime_state.election_player_votes,
         election_opposition_votes=runtime_state.election_opposition_votes,
