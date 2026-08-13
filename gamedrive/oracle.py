@@ -24,6 +24,7 @@ from typing import Callable, Sequence
 from autocracy import simulator
 from autocracy.models import PolicyAction, PolicyActionOption, SimulationState
 from autocracy.oracle import (
+    DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
     OracleElectionLoss,
     OracleSearchResult,
     score_savegame,
@@ -620,7 +621,7 @@ class ElectionGameDriveOracleAgent(GameDriveOracleAgent):
         candidate_limit: int | None = None,
         max_actions_per_turn: int = 2,
         batch_candidate_limit: int | None = None,
-        time_budget_seconds: float | None = 600.0,
+        time_budget_seconds: float | None = DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
         random_seed: int | None = None,
         timeout: int = 120,
         turn_mode: str = "sync",

@@ -18,6 +18,11 @@ from .savegame import SaveGame
 
 StateT = TypeVar("StateT")
 
+# A full election-term search is intentionally allowed to spend more time on
+# each real turn than the short VPS smoke runs.  Callers can still pass a
+# smaller budget (or ``None`` for an unbounded search) for interactive work.
+DEFAULT_ELECTION_TIME_BUDGET_SECONDS = 900.0
+
 
 class OracleElectionLoss(RuntimeError):
     """Raised when no searched branch survives an election.

@@ -15,6 +15,7 @@ from .models import (
 )
 from . import simulator
 from .oracle import (
+    DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
     OracleElectionLoss,
     OracleSearchResult,
     score_election_state,
@@ -462,7 +463,7 @@ class ElectionOracleAgent(SimulatorOracleAgent):
         candidate_limit: int | None = None,
         max_actions_per_turn: int = 2,
         batch_candidate_limit: int | None = None,
-        time_budget_seconds: float | None = 600.0,
+        time_budget_seconds: float | None = DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
         random_seed: int | None = None,
     ) -> None:
         super().__init__(

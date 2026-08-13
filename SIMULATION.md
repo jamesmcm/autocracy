@@ -160,7 +160,7 @@ positive expected margin at turn 13, and won the first election with 865 player
 / 281 opposition / 854 absent and an 81.85% poll. A full-roster 120-second
 search selected the same first batch (`TelecommutingInitiative` plus
 `FoodStamps`) and completed two lookahead layers after 589 simulator branches.
-The production example uses the same search with a 600-second wall-clock
+The production example uses the same search with a 900-second wall-clock
 budget; beam states are retained incrementally so a long search does not grow
 memory with every discarded voter population.
 
@@ -373,7 +373,7 @@ agent = ElectionOracleAgent(
     candidate_limit=64,
     max_actions_per_turn=2,
     batch_candidate_limit=256,
-    time_budget_seconds=600,
+    time_budget_seconds=900,
 )
 result = agent.search()
 agent.step()
@@ -392,7 +392,33 @@ candidate-sampling behavior as the simulator agent.
 `ElectionGameDriveOracleAgent` selects the matching full-term election-margin
 objective for native validation.
 
-Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
+### Autoregressive time-series forecasting
+
+`autocracy.timeseries` defines a dependency-free contract for testing a
+time-series foundation model against the simulator. `StateFeatureEncoder`
+fixes the state columns; `AutoregressiveContext` keeps the observed rows and
+the action batch responsible for each transition; and
+`ForecastModelInput` exposes those rows, action history, pending actions, and
+the requested horizon as plain Python data. `TimeSeriesPolicyAgent` scores
+candidate actions with a forecaster, commits the selected action through the
+real simulator, then appends the new observed state before the next choice.
+
+The included `PersistenceForecaster` and `EmpiricalActionForecaster` are
+CPU-safe baselines. `Chronos2Forecaster` is an injected-backend adapter and
+does not import torch or require CUDA on this host. A later GPU experiment can
+wrap its Chronos2 pipeline in `Chronos2Forecaster.from_callable(...)` without
+changing the context, agent, or trace format. Run the current scaffold with:
+
+```bash
+uv run main.py timeseries --turns 32 --model empirical --forecast-horizon 8 \
+  --trace-out forecast.json
+```
+
+The trace contains each predicted trajectory, selected action, actual next
+state, and one-step mean absolute error, so persistence, empirical, and
+Chronos2 runs can be compared over the same observed episode.
+
+Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 
 | Function | Description |
 |----------|-------------|

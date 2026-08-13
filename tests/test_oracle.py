@@ -9,7 +9,10 @@ import pytest
 from autocracy import simulator
 from autocracy.agent import ElectionOracleAgent, SimulatorOracleAgent
 from autocracy.models import PartyState, PolicyAction, PolicyActionOption, Voter
-from autocracy.oracle import OracleElectionLoss
+from autocracy.oracle import (
+    DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
+    OracleElectionLoss,
+)
 from gamedrive.oracle import GameDriveOracleAgent, native_order_for_option
 
 
@@ -125,6 +128,7 @@ def test_election_oracle_defaults_to_the_next_election():
 
     assert agent.search_horizon is None
     assert agent._resolved_search_horizon(agent.state) == 16
+    assert agent.time_budget_seconds == DEFAULT_ELECTION_TIME_BUDGET_SECONDS == 900.0
 
 
 def test_simulator_oracle_returns_safe_fallback_when_budget_expires():

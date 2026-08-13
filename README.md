@@ -26,6 +26,9 @@ uv run main.py simulate --country uk --turns 1 -p IncomeTax:-0.05 --state-out sn
 # Resume from a saved snapshot with the passive agent loop
 uv run main.py agent --state-in snapshot.json --turns 3
 
+# Run the CPU-safe autoregressive action-forecast scaffold and save its trace
+uv run main.py timeseries --turns 8 --model empirical --trace-out forecast.json
+
 # Load or compare a Democracy 3 save directly
 uv run main.py load-save gamedata/saves/uk0.xml
 uv run main.py compare-save gamedata/saves/uk0.xml --state-in snapshot.json
@@ -46,6 +49,8 @@ political capital, total income, total expenditure, and net balance. The
   and leaves dilemmas, attacks, and events as explicit stubs.
 - `autocracy/agent.py` provides the `BaseAgent`/`PassiveAgent` turn-loop
   scaffold and the simulator-backed beam-search oracle.
+- `autocracy/timeseries.py` provides the fixed-schema autoregressive context,
+  CPU baselines, and optional Chronos2 backend boundary for action forecasts.
 - `autocracy/savegame.py` parses Democracy 3 XML saves and compares simulator
   output against real snapshots.
 - `gamedrive/oracle.py` provides a native beam-search oracle that evaluates
@@ -254,7 +259,7 @@ election_oracle = ElectionOracleAgent(
     candidate_limit=64,
     max_actions_per_turn=2,
     batch_candidate_limit=256,
-    time_budget_seconds=600,
+    time_budget_seconds=900,
 )
 result = election_oracle.search()
 print(result.first_actions, result.score, result.evaluated)
@@ -298,6 +303,35 @@ and discard branches that lose. If no searched branch survives, they raise
 ended. The native path persists the resolved term/countdown and voter vote
 enums into its temporary winning checkpoint before launching another branch;
 the original source save is left untouched.
+
+### Time-series action forecasting
+
+`autocracy.timeseries` supplies the experiment boundary for a foundation model
+without adding a torch or CUDA dependency. `AutoregressiveContext` stores a
+fixed feature schema, the observed state rows, and the action batch that led
+from each row to the next. `TimeSeriesPolicyAgent` evaluates legal actions by
+asking an `ActionConditionedForecaster` for a future trajectory, executes the
+selected action in the simulator, and appends the real resulting state before
+the next decision. This is the intended autoregressive loop:
+
+```python
+from autocracy.timeseries import EmpiricalActionForecaster, TimeSeriesPolicyAgent
+
+agent = TimeSeriesPolicyAgent(
+    EmpiricalActionForecaster(),
+    forecast_horizon=8,
+    candidate_limit=32,
+)
+for _ in range(32):
+    agent.step()
+agent.save_trace("forecast.json")
+```
+
+The empirical and persistence forecasters run on the VPS and provide CPU
+baselines. `Chronos2Forecaster.from_callable(...)` accepts a later GPU-backed
+Chronos2 predictor using the same `ForecastModelInput`; no model weights are
+downloaded by this repository. Each trace records predictions and the actual
+next state, including one-step mean absolute error for later model comparison.
 
 ### Current parity limits
 

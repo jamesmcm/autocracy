@@ -10,6 +10,11 @@ from rich.table import Table
 from autocracy.models import PolicyAction, SimulationConfig
 from autocracy import simulator
 from autocracy.agent import PassiveAgent
+from autocracy.timeseries import (
+    EmpiricalActionForecaster,
+    PersistenceForecaster,
+    TimeSeriesPolicyAgent,
+)
 from autocracy.savegame import (
     compare_state_to_savegame,
     load_state_from_savegame,
@@ -404,6 +409,126 @@ def agent(
     if state_out:
         agent.save_state(state_out)
         console.print(f"Saved state to {state_out}")
+
+
+@app.command()
+def timeseries(
+    country: str = typer.Option("uk", "--country", "-c", help="Country mission to load."),
+    turns: int = typer.Option(
+        4, "--turns", "-t", help="Number of autoregressive decision loops to execute."
+    ),
+    model: str = typer.Option(
+        "empirical",
+        "--model",
+        help="Forecaster: empirical, persistence, or chronos2 (GPU backend required).",
+    ),
+    forecast_horizon: int = typer.Option(
+        4,
+        "--forecast-horizon",
+        help="Number of future rows scored for each candidate action.",
+    ),
+    candidate_limit: int = typer.Option(
+        32,
+        "--candidate-limit",
+        help="Number of no-op plus single-action candidates to evaluate per turn.",
+    ),
+    gamedata: Optional[Path] = typer.Option(None, "--gamedata", help="Override gamedata/data path."),
+    state_in: Optional[Path] = typer.Option(
+        None,
+        "--state-in",
+        help="Start from a previously saved simulator state snapshot.",
+    ),
+    state_out: Optional[Path] = typer.Option(
+        None,
+        "--state-out",
+        help="Persist the final simulator state snapshot.",
+    ),
+    trace_out: Optional[Path] = typer.Option(
+        None,
+        "--trace-out",
+        help="Persist the autoregressive context, predictions, and observations as JSON.",
+    ),
+    events: bool = typer.Option(False, "--events", help="Enable random events."),
+    dilemmas: bool = typer.Option(False, "--dilemmas", help="Enable dilemmas."),
+    pressure_groups: bool = typer.Option(
+        False, "--pressure-groups", help="Enable pressure-group threat events."
+    ),
+    assassinations: bool = typer.Option(
+        False, "--assassinations", help="Enable extremist plots and assassinations."
+    ),
+    random_seed: int = typer.Option(0, "--random-seed", help="Seed stochastic systems and candidate sampling."),
+):
+    """Run the CPU-safe autoregressive action-forecast experiment scaffold."""
+
+    model_name = model.lower()
+    if model_name == "empirical":
+        forecaster = EmpiricalActionForecaster()
+    elif model_name == "persistence":
+        forecaster = PersistenceForecaster()
+    elif model_name == "chronos2":
+        raise typer.BadParameter(
+            "chronos2 needs a GPU-backed predictor; use "
+            "Chronos2Forecaster.from_callable(...) from Python"
+        )
+    else:
+        raise typer.BadParameter(
+            "model must be one of: empirical, persistence, chronos2"
+        )
+    if turns < 0:
+        raise typer.BadParameter("turns must be non-negative")
+    if forecast_horizon < 1:
+        raise typer.BadParameter("forecast-horizon must be at least one")
+    if candidate_limit < 1:
+        raise typer.BadParameter("candidate-limit must be at least one")
+
+    data_root = str(gamedata) if gamedata else None
+    config = _simulation_config(
+        events, dilemmas, pressure_groups, assassinations, random_seed
+    )
+    if state_in:
+        state = simulator.load_state(state_in)
+        agent = TimeSeriesPolicyAgent(
+            forecaster,
+            country=state.country,
+            gamedata_root=data_root,
+            state=state,
+            config=config,
+            forecast_horizon=forecast_horizon,
+            candidate_limit=candidate_limit,
+            random_seed=random_seed,
+        )
+    else:
+        agent = TimeSeriesPolicyAgent(
+            forecaster,
+            country=country,
+            gamedata_root=data_root,
+            config=config,
+            forecast_horizon=forecast_horizon,
+            candidate_limit=candidate_limit,
+            random_seed=random_seed,
+        )
+    console.print(
+        f"Starting autoregressive action forecast for {agent.state.country.upper()} "
+        f"with {forecaster.name}"
+    )
+    for _ in range(turns):
+        agent.step()
+        decision = agent.decisions[-1]
+        action_text = ", ".join(
+            f"{action.policy_name}:{action.action_type or 'delta'}={action.delta:+.2f}"
+            for action in decision.actions
+        ) or "no-op"
+        mae = "-" if decision.one_step_mae is None else f"{decision.one_step_mae:.5f}"
+        console.print(
+            f"Turn {decision.turn}: {action_text}; "
+            f"candidates={decision.candidate_count}; one-step MAE={mae}"
+        )
+    if state_out:
+        agent.save_state(state_out)
+        console.print(f"Saved state to {state_out}")
+    if trace_out:
+        agent.save_trace(trace_out)
+        console.print(f"Saved time-series trace to {trace_out}")
 
 
 @app.command()
