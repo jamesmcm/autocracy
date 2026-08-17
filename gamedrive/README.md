@@ -197,8 +197,21 @@ PYTHONPATH=. uv run python gamedrive/capture.py \
 PYTHONPATH=. uv run python gamedrive/term_capture.py \
   --country uk --load-name turn0_initial \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
-  --one-process-per-turn \
   --capture-prefix autocracy_uk_term_noorders_run42 --timeout 180
+
+# Keep only the final checkpoint from a persistent multi-turn run
+PYTHONPATH=. uv run python gamedrive/term_capture.py \
+  --country uk --load-name turn0_initial --turns 24 \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --no-write-each-step \
+  --capture-prefix autocracy_uk_term_final_run42 --timeout 180
+
+# Legacy isolation mode: start a fresh game process for every turn
+PYTHONPATH=. uv run python gamedrive/term_capture.py \
+  --country uk --load-name turn0_initial \
+  --initial-file parity_cases/dem3saves/turn0_initial.xml \
+  --one-process-per-turn \
+  --capture-prefix autocracy_uk_term_isolated_run42 --timeout 180
 
 # Generate the captured policy sequence, then twelve additional no-order turns
 PYTHONPATH=. uv run python gamedrive/term_capture.py \
@@ -245,9 +258,12 @@ The `capture.py` comparison is offline and never launches the game.
 saves. Supplying `--orders-dir` replays the available pre-turn order saves and
 pads the remaining term with explicit no-order turns. The source name is only
 read by the game; every loaded/capture output name is fresh and validated.
-With `--one-process-per-turn`, each completed save becomes the next process's
-load input, producing reliable chain names of the form
-`<prefix>_stepN_turn1.xml` while preserving serialized turns 1 through 24.
+Persistent mode is the default: one game process runs the complete sequence.
+`--write-each-step` (the default) preserves one XML checkpoint per turn;
+`--no-write-each-step` writes only the loaded checkpoint and final output.
+`--one-process-per-turn` selects the legacy isolated mode, where each completed
+save becomes the next process's load input and produces chain names of the form
+`<prefix>_stepN_turn1.xml`.
 
 `term_audit.py` replays the same orders offline and compares finance, ordinary
 and hidden nodes, situations, voter aggregates and individual values, policy

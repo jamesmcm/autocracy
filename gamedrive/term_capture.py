@@ -99,7 +99,13 @@ def main() -> int:
     parser.add_argument(
         "--one-process-per-turn",
         action="store_true",
-        help="chain reliable one-turn native workers instead of one long worker",
+        help="use the legacy isolated one-turn process for every turn",
+    )
+    parser.add_argument(
+        "--write-each-step",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write one native XML checkpoint per turn (default: yes)",
     )
     parser.add_argument("--save-root", type=Path, default=inject_drive.SAVE_ROOT)
     parser.add_argument("--game", type=Path, default=inject_drive.GAME)
@@ -131,6 +137,8 @@ def main() -> int:
     prefix = args.capture_prefix or _fresh_name(
         f"autocracy_{args.country}_term_capture"
     )
+    if args.one_process_per_turn and not args.write_each_step:
+        parser.error("--no-write-each-step requires the persistent process mode")
     loaded_name = args.loaded_name or _fresh_name(f"{prefix}_loaded")
     after_turn_name = _fresh_name(f"{prefix}_after")
     edited_name = _fresh_name(f"{prefix}_edited")
@@ -162,6 +170,7 @@ def main() -> int:
                     timeout=args.timeout,
                     capture_specs=[spec],
                     capture_prefix=segment_prefix,
+                    write_each_step=True,
                     game=args.game,
                     probe=args.probe,
                     save_root=args.save_root,
@@ -182,6 +191,7 @@ def main() -> int:
             timeout=args.timeout,
             capture_specs=specs,
             capture_prefix=prefix,
+            write_each_step=args.write_each_step,
             game=args.game,
             probe=args.probe,
             save_root=args.save_root,

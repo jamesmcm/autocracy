@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from gamedrive.capture import replay_simulator
+from gamedrive.inject_drive import _output_paths
 from gamedrive.term_capture import build_term_specs, capture_turns, mission_term_length
 
 
@@ -40,3 +41,21 @@ def test_no_order_replay_can_cover_a_full_term_plus_extra_turns():
     )
 
     assert sorted(snapshots) == list(range(1, 25))
+
+
+def test_capture_can_keep_only_the_final_native_checkpoint():
+    paths = _output_paths(
+        loaded_name="loaded",
+        after_turn_name="after",
+        edited_name="edited",
+        orders_save_name=None,
+        manager_save_name=None,
+        capture_prefix="capture",
+        capture_count=3,
+        write_each_step=False,
+        edit_node=None,
+        skip_turn=False,
+        save_root=Path("/tmp/savegames"),
+    )
+
+    assert paths == [Path("/tmp/savegames/loaded.xml"), Path("/tmp/savegames/after.xml")]

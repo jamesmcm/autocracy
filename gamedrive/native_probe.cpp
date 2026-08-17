@@ -490,6 +490,11 @@ bool setting_enabled(const char* name) {
            (std::string(value) == "1" || std::string(value) == "true");
 }
 
+bool write_each_step() {
+    const char* value = std::getenv("D3_WRITE_EACH_STEP");
+    return value == nullptr || std::string(value) != "0";
+}
+
 int capture_turn_count() {
     const char* value = std::getenv("D3_TURN_COUNT");
     if (value == nullptr || *value == '\0') {
@@ -577,10 +582,17 @@ int begin_probe() {
                 const std::string variable =
                     "D3_ORDERS_" + std::to_string(index);
                 if (apply_orders(std::getenv(variable.c_str())) != 0 ||
-                    d3_gameplay_next_turn_sync() != 0 ||
+                    d3_gameplay_next_turn_sync() != 0) {
+                    return 24;
+                }
+                if (write_each_step() &&
                     !save_game_name(capture_save_name(prefix, index + 1))) {
                     return 24;
                 }
+            }
+            if (!write_each_step() &&
+                !save_game("D3_SAVE_AFTER_TURN", "d3_probe_after_turn")) {
+                return 6;
             }
             g_probe_finished = true;
             return 0;

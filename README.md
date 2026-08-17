@@ -393,10 +393,12 @@ schema, Chronos2 integration boundary, and evaluation recommendations.
   Compare it offline with `gamedrive/capture.py`; see
   [`gamedrive/README.md`](gamedrive/README.md) for fresh-output validation,
   manager census, and the memory-editing boundary.
-- Use `gamedrive/term_capture.py --country uk --one-process-per-turn` for the
-  configured 16-turn UK term plus eight extra turns; its `--orders-dir` mode
-  appends a no-order tail to an existing action sequence. Audit the resulting
-  chain with `gamedrive/term_audit.py`; use
+- Use `gamedrive/term_capture.py --country uk` for the configured 16-turn UK
+  term plus eight extra turns; persistent one-process capture is the default.
+  Use `--one-process-per-turn` only for the legacy isolated chain, and
+  `--no-write-each-step` when only the final native checkpoint is needed. Its
+  `--orders-dir` mode appends a no-order tail to an existing action sequence.
+  Audit retained checkpoints with `gamedrive/term_audit.py`; use
   `SimulationConfig(minister_resignations=True)` only when the replay should
   model deterministic below-threshold minister removal.
 - Keep raw native output saves outside the repository and use fresh save names;

@@ -70,6 +70,7 @@ def _output_paths(
     manager_save_name: str | None,
     capture_prefix: str | None,
     capture_count: int,
+    write_each_step: bool,
     edit_node: str | None,
     skip_turn: bool,
     save_root: Path,
@@ -81,11 +82,13 @@ def _output_paths(
         paths.append(_save_path(edited_name, save_root))
     if orders_save_name is not None:
         paths.append(_save_path(orders_save_name, save_root))
-    if capture_prefix is not None:
+    if capture_prefix is not None and write_each_step:
         paths.extend(
             _save_path(f"{capture_prefix}_turn{index}", save_root)
             for index in range(1, capture_count + 1)
         )
+    elif capture_prefix is not None and not skip_turn:
+        paths.append(_save_path(after_turn_name, save_root))
     elif not skip_turn:
         paths.append(_save_path(after_turn_name, save_root))
     if manager_save_name is not None:
@@ -173,6 +176,7 @@ def run(
     order_spec: str | None = None,
     capture_specs: Sequence[str] | None = None,
     capture_prefix: str | None = None,
+    write_each_step: bool = True,
     orders_save_name: str | None = None,
     manager_audit_path: Path | None = None,
     manager_save_name: str | None = None,
@@ -228,6 +232,7 @@ def run(
         manager_save_name=manager_save_name,
         capture_prefix=capture_prefix,
         capture_count=capture_count,
+        write_each_step=write_each_step,
         edit_node=edit_node,
         skip_turn=skip_turn,
         save_root=save_root,
@@ -283,6 +288,8 @@ def run(
     if capture_specs:
         _set_environment(gdb_args, "D3_TURN_COUNT", str(capture_count))
         _set_environment(gdb_args, "D3_CAPTURE_PREFIX", capture_prefix or "d3_probe_capture")
+        if not write_each_step:
+            _set_environment(gdb_args, "D3_WRITE_EACH_STEP", "0")
         for index, spec in enumerate(capture_specs):
             if spec:
                 _set_environment(gdb_args, f"D3_ORDERS_{index}", spec)
@@ -410,6 +417,12 @@ def main() -> int:
     parser.add_argument("--orders-dir", type=Path)
     parser.add_argument("--initial-file", type=Path)
     parser.add_argument("--capture-prefix")
+    parser.add_argument(
+        "--write-each-step",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write one native XML checkpoint per captured turn (default: yes)",
+    )
     parser.add_argument("--orders-save-name")
     parser.add_argument("--manager-audit", action="store_true")
     parser.add_argument("--manager-audit-path", type=Path)
@@ -481,6 +494,7 @@ def main() -> int:
             order_spec=order_spec,
             capture_specs=capture_specs,
             capture_prefix=capture_prefix,
+            write_each_step=args.write_each_step,
             orders_save_name=orders_save_name,
             manager_audit_path=manager_audit_path,
             manager_save_name=manager_save_name,
