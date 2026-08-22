@@ -10,6 +10,12 @@ dependencies = [
     "pytest>=8.3.0",
 ]
 
+[project.optional-dependencies]
+chronos = [
+    "chronos-forecasting>=2,<3",
+    "pandas>=2.2",
+]
+
 [tool.pytest.ini_options]
 markers = [
     "integration: opt-in native Democracy 3 process smoke test",

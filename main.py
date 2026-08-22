@@ -420,7 +420,7 @@ def timeseries(
     model: str = typer.Option(
         "empirical",
         "--model",
-        help="Forecaster: empirical, persistence, or chronos2 (GPU backend required).",
+        help="Forecaster: empirical, persistence, or chronos2-small (GPU).",
     ),
     forecast_horizon: int = typer.Option(
         4,
@@ -465,14 +465,13 @@ def timeseries(
         forecaster = EmpiricalActionForecaster()
     elif model_name == "persistence":
         forecaster = PersistenceForecaster()
-    elif model_name == "chronos2":
-        raise typer.BadParameter(
-            "chronos2 needs a GPU-backed predictor; use "
-            "Chronos2Forecaster.from_callable(...) from Python"
-        )
+    elif model_name in {"chronos2-small", "chronos-2-small"}:
+        from autocracy.chronos import Chronos2SmallForecaster
+
+        forecaster = Chronos2SmallForecaster()
     else:
         raise typer.BadParameter(
-            "model must be one of: empirical, persistence, chronos2"
+            "model must be one of: empirical, persistence, chronos2-small"
         )
     if turns < 0:
         raise typer.BadParameter("turns must be non-negative")
@@ -496,6 +495,8 @@ def timeseries(
             forecast_horizon=forecast_horizon,
             candidate_limit=candidate_limit,
             random_seed=random_seed,
+            visible_features_only=True,
+            seed_pre_game_history=forecaster.name == "chronos-2-small",
         )
     else:
         agent = TimeSeriesPolicyAgent(
@@ -506,6 +507,8 @@ def timeseries(
             forecast_horizon=forecast_horizon,
             candidate_limit=candidate_limit,
             random_seed=random_seed,
+            visible_features_only=True,
+            seed_pre_game_history=forecaster.name == "chronos-2-small",
         )
     console.print(
         f"Starting autoregressive action forecast for {agent.state.country.upper()} "
