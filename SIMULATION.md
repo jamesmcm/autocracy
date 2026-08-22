@@ -364,6 +364,15 @@ turn. Because headless GameDrive leaves the result screen unresolved, its
 temporary branch save is updated with the new term/countdown and per-voter vote
 enums before it is used as a parent for a later native turn.
 
+`ElectionOracleAgent` is the election-tuned simulator oracle. Its defaults
+are the documented winning configuration (`PROVEN_ELECTION_SEARCH` in
+`autocracy/oracle.py`: beam 6, five-turn lookahead, two policy moves per
+turn, 16 sampled candidates, up to 64 legal pairs, 15-second decision
+budget), which recovers from a lagged turn-5 dip and wins the first UK
+election from turn 0. Override parameters only deliberately — weaker
+hand-rolled settings have produced misleading "unwinnable" conclusions in
+past experiments.
+
 ```python
 from autocracy.agent import ElectionOracleAgent
 
@@ -404,22 +413,30 @@ candidate actions with a forecaster, commits the selected action through the
 real simulator, then appends the new observed state before the next choice.
 
 The included `PersistenceForecaster` and `EmpiricalActionForecaster` are
-CPU-safe baselines. `Chronos2Forecaster` is an injected-backend adapter and
-does not import torch or require CUDA on this host. A later GPU experiment can
-wrap its Chronos2 pipeline in `Chronos2Forecaster.from_callable(...)` without
-changing the context, agent, or trace format. Run the current scaffold with:
+CPU-safe baselines. `Chronos2SmallForecaster` (in `autocracy.chronos`) is a
+working multivariate backend for `autogluon/chronos-2-small`: it forecasts
+every player-visible observed feature jointly, supplies the policy sliders as
+known-future treatment covariates, and batches all candidate actions into one
+pipeline call. It needs the optional `chronos` extra (`uv sync --extra
+chronos`). The injected-backend `Chronos2Forecaster` remains available and
+does not import torch. Run the current scaffold with:
 
 ```bash
 uv run main.py timeseries --turns 32 --model empirical --forecast-horizon 8 \
   --trace-out forecast.json
+
+# Foundation-model forecaster with pre-game save histories as covariates
+uv run --extra chronos main.py timeseries --turns 16 --model chronos2-small \
+  --forecast-horizon 8 --trace-out forecast.json
 ```
 
 The trace contains each predicted trajectory, selected action, actual next
 state, and one-step mean absolute error, so persistence, empirical, and
-Chronos2 runs can be compared over the same observed episode.
+Chronos-2 runs can be compared over the same observed episode.
 
 See [`TIMESERIES.md`](TIMESERIES.md) for the complete model-input contract,
-trace schema, and GPU handoff protocol.
+covariate roles, trace schema, and the closed-loop control comparison against
+the simulator oracle (`reports/chronos-2-small-vs-oracle.md`).
 
 Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 

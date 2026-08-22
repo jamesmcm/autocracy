@@ -29,6 +29,10 @@ uv run main.py agent --state-in snapshot.json --turns 3
 # Run the CPU-safe autoregressive action-forecast scaffold and save its trace
 uv run main.py timeseries --turns 8 --model empirical --trace-out forecast.json
 
+# Run the Chronos-2-small foundation-model forecaster (needs the chronos extra)
+uv sync --extra chronos
+uv run main.py timeseries --turns 8 --model chronos2-small --trace-out forecast.json
+
 # Load or compare a Democracy 3 save directly
 uv run main.py load-save gamedata/saves/uk0.xml
 uv run main.py compare-save gamedata/saves/uk0.xml --state-in snapshot.json
@@ -50,7 +54,12 @@ political capital, total income, total expenditure, and net balance. The
 - `autocracy/agent.py` provides the `BaseAgent`/`PassiveAgent` turn-loop
   scaffold and the simulator-backed beam-search oracle.
 - `autocracy/timeseries.py` provides the fixed-schema autoregressive context,
-  CPU baselines, and optional Chronos2 backend boundary for action forecasts.
+  CPU baselines, and covariate-role schema (player-visible targets versus
+  known-future policy treatments) for action forecasts.
+- `autocracy/chronos.py` implements the `autogluon/chronos-2-small`
+  multivariate forecaster behind the optional `chronos` extra.
+- `experiments/control_comparison.py` plays a full UK term comparing the
+  forecast agents against the simulator beam-search oracle.
 - `TIMESERIES.md` documents the forecast input contract, trace format, and
   fair comparison protocol for CPU and GPU-backed models.
 - `autocracy/savegame.py` parses Democracy 3 XML saves and compares simulator
