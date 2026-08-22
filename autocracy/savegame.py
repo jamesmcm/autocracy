@@ -42,6 +42,10 @@ class SaveGame:
     global_economy_intensity: float
     hidden_values: Dict[str, float]
     hidden_histories: Dict[str, List[float]] = field(default_factory=dict)
+    # Per-node simvalue <history> rings from the save (newest-first).  These
+    # give forecasting agents a pre-game covariate history for every observed
+    # value the game itself records.
+    simvalue_histories: Dict[str, List[float]] = field(default_factory=dict)
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)
@@ -203,6 +207,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
     except (TypeError, ValueError):
         turn = 0
     simvalues: Dict[str, float] = {}
+    simvalue_histories: Dict[str, List[float]] = {}
     simvalues_elem = root.find("simvalues")
     if simvalues_elem is not None:
         for simvalue in simvalues_elem.findall("simvalue"):
@@ -214,6 +219,11 @@ def parse_savegame(path: str | Path) -> SaveGame:
                 simvalues[name.strip()] = float(value)
             except ValueError:
                 continue
+            # The per-node <history> ring is stored newest-first, matching
+            # the policy cost/income rings and the poll history.
+            history_values = _history_values(simvalue.findtext("history"))
+            if history_values:
+                simvalue_histories[name.strip()] = history_values
     policies: Dict[str, float] = {}
     policy_desired_throttles: Dict[str, float] = {}
     policy_costs: Dict[str, float] = {}
@@ -624,6 +634,7 @@ def parse_savegame(path: str | Path) -> SaveGame:
         country=country.lower(),
         turn=turn,
         simvalues=simvalues,
+        simvalue_histories=simvalue_histories,
         policies=policies,
         policy_desired_throttles=policy_desired_throttles,
         policy_costs=policy_costs,
@@ -703,6 +714,13 @@ def state_from_savegame(
     state.hidden_histories = {
         name: list(values) for name, values in save.hidden_histories.items()
     }
+    # Pre-game covariate history for forecasting agents.  The rings are
+    # newest-first on disk; keep them in that convention here so every
+    # consumer reverses explicitly.
+    state.value_histories = {
+        name: list(values) for name, values in save.simvalue_histories.items()
+    }
+    state.value_histories_turn = save.turn
     for name, value in save.voter_values.items():
         state.voter_values[name] = value
         state.values[name] = value

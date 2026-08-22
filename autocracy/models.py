@@ -305,6 +305,13 @@ class SimulationState:
     # public simulator names (for example ``_globaleconomy_`` and ``_year``).
     # The XML save stores these separately from ordinary simvalue histories.
     hidden_histories: Dict[str, List[float]] = field(default_factory=dict)
+    # Newest-first per-node value rings recovered from a Democracy 3 save's
+    # <simvalues>/<simvalue>/<history> blocks.  Forecasting agents use these
+    # as the pre-game covariate history; ordinary play never mutates them.
+    # ``value_histories_turn`` is the turn the rings end at, so consumers can
+    # detect when live observations have moved past them.
+    value_histories: Dict[str, List[float]] = field(default_factory=dict)
+    value_histories_turn: Optional[int] = None
     voter_values: Dict[str, float] = field(default_factory=dict)
     voter_percentages: Dict[str, float] = field(default_factory=dict)
     voter_frequencies: Dict[str, float] = field(default_factory=dict)

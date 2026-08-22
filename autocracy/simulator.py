@@ -475,6 +475,12 @@ def _seed_state_from_initial_save(
     state.hidden_histories = {
         name: list(values) for name, values in save.hidden_histories.items()
     }
+    # Keep the save's per-node value rings so a forecasting agent starting
+    # from this mission can condition on the pre-game covariate history.
+    state.value_histories = {
+        name: list(values) for name, values in save.simvalue_histories.items()
+    }
+    state.value_histories_turn = save.turn
     for name, value in save.voter_values.items():
         state.voter_values[name] = value
         state.values[name] = value
@@ -3413,6 +3419,13 @@ def process_end_of_turn(
         policy_finance_levels=runtime_state.policy_finance_levels.copy(),
         global_economy_position=global_position,
         hidden_histories=hidden_histories,
+        # Pre-game covariate rings ride along untouched; their end-turn
+        # marker stays behind the live turn, which is how forecasters tell
+        # them apart from live observations.
+        value_histories={
+            name: list(values) for name, values in state.value_histories.items()
+        },
+        value_histories_turn=state.value_histories_turn,
         voter_values=runtime_state.voter_values.copy(),
         voter_percentages=runtime_state.voter_percentages.copy(),
         voter_frequencies=runtime_state.voter_frequencies.copy(),
@@ -4199,6 +4212,13 @@ def state_to_dict(state: SimulationState) -> Dict[str, object]:
         "credit_rating": state.credit_rating,
         "turns_since_credit": state.turns_since_credit,
         "interest_rate": state.interest_rate,
+        # Pre-game covariate rings for forecasting agents; keep the end-turn
+        # marker so a restored snapshot can still tell whether the rings are
+        # aligned with the live turn.
+        "value_histories": {
+            name: list(values) for name, values in state.value_histories.items()
+        },
+        "value_histories_turn": state.value_histories_turn,
     }
 
 
@@ -4404,6 +4424,12 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         credit_rating=int(payload.get("credit_rating", 0)),
         turns_since_credit=int(payload.get("turns_since_credit", 0)),
         interest_rate=float(payload.get("interest_rate", 0.0)),
+        value_histories=_history_rings(payload, "value_histories"),
+        value_histories_turn=(
+            int(raw_turn)
+            if (raw_turn := payload.get("value_histories_turn")) is not None
+            else None
+        ),
     )
     data = load_simulation_data()
     _recalculate_budget(state, data)
@@ -4414,6 +4440,20 @@ def state_from_dict(payload: Dict[str, object]) -> SimulationState:
         state.policy_income_histories, state.policy_incomes, data
     )
     return state
+
+
+def _history_rings(
+    payload: Dict[str, object], key: str
+) -> Dict[str, List[float]]:
+    """Read a dict of float-list rings, dropping empty entries."""
+
+    raw = payload.get(key) or {}
+    rings: Dict[str, List[float]] = {}
+    for name, values in dict(raw).items():
+        ring = [float(value) for value in values]
+        if ring:
+            rings[str(name)] = ring
+    return rings
 
 
 def save_state(state: SimulationState, path: str | Path) -> None:

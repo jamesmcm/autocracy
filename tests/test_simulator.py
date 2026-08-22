@@ -37,6 +37,9 @@ def test_state_serialization_round_trip(tmp_path):
     assert restored.election_turns_until == state.election_turns_until
     assert restored.election_current_term == state.election_current_term
     assert restored.poll_history == state.poll_history
+    assert restored.value_histories == state.value_histories
+    assert restored.value_histories_turn == state.value_histories_turn
+    assert state.value_histories, "uk0.xml must provide pre-game rings"
     out_path = tmp_path / "state.json"
     simulator.save_state(state, out_path)
     reloaded = simulator.load_state(out_path)
