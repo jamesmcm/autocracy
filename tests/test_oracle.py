@@ -9,10 +9,7 @@ import pytest
 from autocracy import simulator
 from autocracy.agent import ElectionOracleAgent, SimulatorOracleAgent
 from autocracy.models import PartyState, PolicyAction, PolicyActionOption, Voter
-from autocracy.oracle import (
-    DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
-    OracleElectionLoss,
-)
+from autocracy.oracle import OracleElectionLoss
 from gamedrive.oracle import GameDriveOracleAgent, native_order_for_option
 
 
@@ -119,16 +116,35 @@ def test_seeded_batch_sampling_keeps_all_single_moves_and_samples_pairs():
     }
 
 
-def test_election_oracle_defaults_to_the_next_election():
-    agent = ElectionOracleAgent(
-        beam_width=1,
-        candidate_limit=1,
-        max_actions_per_turn=1,
+def test_election_oracle_defaults_to_the_documented_winning_search():
+    from autocracy.oracle import PROVEN_ELECTION_SEARCH
+
+    agent = ElectionOracleAgent()
+
+    assert agent.beam_width == PROVEN_ELECTION_SEARCH["beam_width"] == 6
+    assert agent.search_horizon == PROVEN_ELECTION_SEARCH["search_horizon"] == 5
+    assert agent.candidate_limit == PROVEN_ELECTION_SEARCH["candidate_limit"] == 16
+    assert (
+        agent.batch_candidate_limit
+        == PROVEN_ELECTION_SEARCH["batch_candidate_limit"]
+        == 64
+    )
+    assert (
+        agent.max_actions_per_turn
+        == PROVEN_ELECTION_SEARCH["max_actions_per_turn"]
+        == 2
+    )
+    assert (
+        agent.time_budget_seconds
+        == PROVEN_ELECTION_SEARCH["time_budget_seconds"]
+        == 15.0
     )
 
-    assert agent.search_horizon is None
+
+def test_election_oracle_full_term_horizon_still_resolves_to_the_boundary():
+    agent = ElectionOracleAgent(search_horizon=None)
+
     assert agent._resolved_search_horizon(agent.state) == 16
-    assert agent.time_budget_seconds == DEFAULT_ELECTION_TIME_BUDGET_SECONDS == 900.0
 
 
 def test_simulator_oracle_returns_safe_fallback_when_budget_expires():

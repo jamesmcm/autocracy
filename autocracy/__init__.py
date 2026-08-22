@@ -42,6 +42,7 @@ from .models import ElectionForecast
 from .oracle import (
     DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
     DEFAULT_ORACLE_WEIGHTS,
+    PROVEN_ELECTION_SEARCH,
     OracleElectionLoss,
     OracleSearchResult,
     score_savegame,
@@ -100,6 +101,7 @@ __all__ = [
     "ElectionOracleAgent",
     "ElectionForecast",
     "DEFAULT_ORACLE_WEIGHTS",
+    "PROVEN_ELECTION_SEARCH",
     "DEFAULT_ELECTION_TIME_BUDGET_SECONDS",
     "OracleElectionLoss",
     "OracleSearchResult",

@@ -15,7 +15,6 @@ from .models import (
 )
 from . import simulator
 from .oracle import (
-    DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
     OracleElectionLoss,
     OracleSearchResult,
     score_election_state,
@@ -109,6 +108,11 @@ class SimulatorOracleAgent(BaseAgent):
     large action roster and a full search can be expensive.  ``None`` means
     exhaustive action enumeration.  The default objective is a weighted
     headline score; pass ``objective`` for a game-specific definition of best.
+
+    Prefer :class:`ElectionOracleAgent` for election campaigns: its defaults
+    are the documented winning configuration.  Ad-hoc settings here (single
+    actions per turn, very shallow horizons) underreport what simulator-backed
+    search achieves and have led to wrong conclusions in past experiments.
     """
 
     def __init__(
@@ -443,12 +447,13 @@ class SimulatorOracleAgent(BaseAgent):
 class ElectionOracleAgent(SimulatorOracleAgent):
     """Full-term simulator oracle optimized for the first election margin.
 
-    This is the practical best-case baseline: it searches to the next
-    election by default, considers every available option, permits two policy
-    changes in one turn, and ranks branches by expected native-style vote
-    margin.  The combination space is intentionally configurable because a
-    completely exhaustive UK search is much larger than one game process can
-    explore interactively.
+    The defaults reproduce the documented winning configuration
+    (:data:`~autocracy.oracle.PROVEN_ELECTION_SEARCH`, see SIMULATION.md):
+    beam 6, five-turn lookahead, two policy moves per turn over 16 sampled
+    candidates and up to 64 legal pairs, under a 15-second decision budget.
+    That search wins the first UK election from turn 0.  Override parameters
+    only deliberately — shallower or narrower settings change the achievable
+    outcome and have produced misleading "unwinnable" conclusions before.
     """
 
     def __init__(
@@ -459,11 +464,11 @@ class ElectionOracleAgent(SimulatorOracleAgent):
         config: Optional[SimulationConfig] = None,
         *,
         beam_width: int | None = 6,
-        search_horizon: int | None = None,
-        candidate_limit: int | None = None,
+        search_horizon: int | None = 5,
+        candidate_limit: int | None = 16,
         max_actions_per_turn: int = 2,
-        batch_candidate_limit: int | None = None,
-        time_budget_seconds: float | None = DEFAULT_ELECTION_TIME_BUDGET_SECONDS,
+        batch_candidate_limit: int | None = 64,
+        time_budget_seconds: float | None = 15.0,
         random_seed: int | None = None,
     ) -> None:
         super().__init__(

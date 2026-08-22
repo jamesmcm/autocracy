@@ -23,6 +23,22 @@ StateT = TypeVar("StateT")
 # smaller budget (or ``None`` for an unbounded search) for interactive work.
 DEFAULT_ELECTION_TIME_BUDGET_SECONDS = 900.0
 
+# The corrected UK experiment documented in SIMULATION.md won its first
+# election from turn 0 with exactly this search configuration (seed
+# 20260813): beam 6, five-turn lookahead, two policy moves per turn over 16
+# sampled candidates with up to 64 legal pairs, under a 15-second decision
+# budget.  :class:`~autocracy.agent.ElectionOracleAgent` uses these values as
+# its defaults so experiments cannot silently degrade to a weaker search;
+# pass overrides deliberately when ablating.
+PROVEN_ELECTION_SEARCH: Mapping[str, object] = {
+    "beam_width": 6,
+    "search_horizon": 5,
+    "candidate_limit": 16,
+    "batch_candidate_limit": 64,
+    "max_actions_per_turn": 2,
+    "time_budget_seconds": 15.0,
+}
+
 
 class OracleElectionLoss(RuntimeError):
     """Raised when no searched branch survives an election.
