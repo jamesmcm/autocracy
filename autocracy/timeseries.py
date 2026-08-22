@@ -19,6 +19,7 @@ output contract is the one a later GPU Chronos2 runner can implement.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import itertools
 import json
 import math
 from pathlib import Path
@@ -26,10 +27,55 @@ import random
 from typing import Callable, Mapping, Protocol, Sequence, TypeAlias
 
 from .agent import BaseAgent
-from .models import PolicyAction, SimulationConfig, SimulationState
+from .models import (
+    PolicyAction,
+    PolicyActionOption,
+    SimulationConfig,
+    SimulationData,
+    SimulationState,
+)
+from . import simulator
 
 
 FeatureRow: TypeAlias = Mapping[str, float]
+
+# Feature prefix marking a player-controlled treatment variable.  Treatments
+# are known in every future step of a forecast because the agent itself
+# chooses them; every other observed feature must be predicted.
+TREATMENT_FEATURE_PREFIX = "policy/"
+# Headline prediction target: total voter electoral support as published by
+# the in-game opinion polls.
+ELECTORAL_SUPPORT_FEATURE = "politics/poll_rate"
+
+_PLAYER_INVISIBLE_CATEGORIES = frozenset({"HIDDEN", "PLACEHOLDER"})
+
+
+def player_visible_value_names(
+    state: SimulationState, data: SimulationData | None = None
+) -> tuple[str, ...]:
+    """Return the simulator value names the player can observe in-game.
+
+    Special meta nodes that drive the simulation but are never shown to the
+    player are excluded: every ``_``-prefixed neuron (``_globaleconomy_``,
+    ``_year``, ``_Terrorism``, ...), every ``HIDDEN``/``PLACEHOLDER``
+    category, and derived runtime neurons such as the nested voter income
+    and percentage mirrors.  Only ordinary simulation nodes remain.
+    """
+
+    data = data or simulator.load_simulation_data()
+    names: list[str] = []
+    for name in state.values:
+        if name.startswith("_"):
+            continue
+        node = data.nodes.get(name)
+        if node is None:
+            # Runtime-only mirrors (voter percentages, incomes) are derived
+            # bookkeeping, not game state a player reads off a screen.
+            continue
+        if node.category in _PLAYER_INVISIBLE_CATEGORIES:
+            continue
+        names.append(name)
+    return tuple(sorted(names))
 
 
 def _finite(value: float, *, name: str) -> float:
@@ -37,6 +83,53 @@ def _finite(value: float, *, name: str) -> float:
     if not math.isfinite(number):
         raise ValueError(f"feature {name!r} is not finite: {value!r}")
     return number
+
+
+def _result_value(state: SimulationState) -> float:
+    return {None: 0.0, "loss": -1.0, "win": 1.0}.get(state.election_result, 0.0)
+
+
+def _winner_value(state: SimulationState) -> float:
+    return {
+        None: 0.0,
+        "opposition": -1.0,
+        "player": 1.0,
+    }.get(state.last_election_winner, 0.0)
+
+
+_FINANCE_SOURCES: dict[str, Callable[[SimulationState], float]] = {
+    "finance/political_capital": lambda state: state.political_capital,
+    "finance/political_capital_income": lambda state: state.political_capital_income,
+    "finance/total_expenditure": lambda state: state.total_expenditure,
+    "finance/total_income": lambda state: state.total_income,
+    "finance/debt": lambda state: state.debt,
+    "finance/interest_rate": lambda state: state.interest_rate,
+}
+
+_ELECTION_SOURCES: dict[str, Callable[[SimulationState], float]] = {
+    "politics/poll_rate": lambda state: state.poll_rate,
+    "politics/peak_poll_rate": lambda state: state.peak_poll_rate,
+    "politics/active_situations": lambda state: float(len(state.active_situations)),
+    "election/turns_until": lambda state: float(state.election_turns_until),
+    "election/current_term": lambda state: float(state.election_current_term),
+    "election/result": _result_value,
+    "election/last_winner": _winner_value,
+}
+
+# Auxiliary fields the game actually displays.  The player-visible schema
+# encodes only these; accrual rates, derived peaks, situation counts, and
+# past-result markers stay out of the model's covariates.
+VISIBLE_FINANCE_FEATURES: tuple[str, ...] = (
+    "finance/political_capital",
+    "finance/total_expenditure",
+    "finance/total_income",
+    "finance/debt",
+    "finance/interest_rate",
+)
+VISIBLE_ELECTION_FEATURES: tuple[str, ...] = (
+    "politics/poll_rate",
+    "election/turns_until",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,12 +141,18 @@ class StateFeatureEncoder:
     column order.  ``from_state`` is the usual constructor and captures all
     ordinary value and policy names by default; callers can pass a smaller
     list for a compact foundation-model experiment.
+
+    ``finance_names`` and ``election_names`` select which auxiliary columns
+    accompany the values.  ``None`` means the legacy full group; the
+    player-visible constructor curates only fields the game displays.
     """
 
     value_names: tuple[str, ...] = ()
     policy_names: tuple[str, ...] = ()
     include_finance: bool = True
     include_election: bool = True
+    finance_names: tuple[str, ...] | None = None
+    election_names: tuple[str, ...] | None = None
 
     @classmethod
     def from_state(
@@ -76,33 +175,62 @@ class StateFeatureEncoder:
             include_election=include_election,
         )
 
+    @classmethod
+    def from_visible_state(
+        cls,
+        state: SimulationState,
+        *,
+        data: SimulationData | None = None,
+        include_finance: bool = True,
+        include_election: bool = True,
+    ) -> "StateFeatureEncoder":
+        """Build the schema over what the player actually sees in-game.
+
+        Values are restricted to ordinary (non-meta) simulation nodes;
+        finance and election columns keep only fields the UI displays.
+        Nothing hidden or derived-by-us is encoded.
+        """
+
+        return cls.from_state(
+            state,
+            value_names=player_visible_value_names(state, data),
+            include_finance=include_finance,
+            include_election=include_election,
+        )._curated_auxiliary_columns()
+
+    def _curated_auxiliary_columns(self) -> "StateFeatureEncoder":
+        return replace(
+            self,
+            finance_names=(
+                VISIBLE_FINANCE_FEATURES if self.include_finance else ()
+            ),
+            election_names=(
+                VISIBLE_ELECTION_FEATURES if self.include_election else ()
+            ),
+        )
+
+    @property
+    def _active_finance_names(self) -> tuple[str, ...]:
+        if not self.include_finance:
+            return ()
+        if self.finance_names is None:
+            return tuple(_FINANCE_SOURCES)
+        return self.finance_names
+
+    @property
+    def _active_election_names(self) -> tuple[str, ...]:
+        if not self.include_election:
+            return ()
+        if self.election_names is None:
+            return tuple(_ELECTION_SOURCES)
+        return self.election_names
+
     @property
     def feature_names(self) -> tuple[str, ...]:
         names = [f"value/{name}" for name in self.value_names]
         names.extend(f"policy/{name}" for name in self.policy_names)
-        if self.include_finance:
-            names.extend(
-                (
-                    "finance/political_capital",
-                    "finance/political_capital_income",
-                    "finance/total_expenditure",
-                    "finance/total_income",
-                    "finance/debt",
-                    "finance/interest_rate",
-                )
-            )
-        if self.include_election:
-            names.extend(
-                (
-                    "politics/poll_rate",
-                    "politics/peak_poll_rate",
-                    "politics/active_situations",
-                    "election/turns_until",
-                    "election/current_term",
-                    "election/result",
-                    "election/last_winner",
-                )
-            )
+        names.extend(self._active_finance_names)
+        names.extend(self._active_election_names)
         return tuple(names)
 
     def encode(self, state: SimulationState) -> dict[str, float]:
@@ -117,45 +245,12 @@ class StateFeatureEncoder:
             row[f"policy/{name}"] = _finite(
                 state.policies.get(name, 0.0), name=f"policy/{name}"
             )
-        if self.include_finance:
-            finance = {
-                "finance/political_capital": state.political_capital,
-                "finance/political_capital_income": state.political_capital_income,
-                "finance/total_expenditure": state.total_expenditure,
-                "finance/total_income": state.total_income,
-                "finance/debt": state.debt,
-                "finance/interest_rate": state.interest_rate,
-            }
-            row.update(
-                {
-                    name: _finite(value, name=name)
-                    for name, value in finance.items()
-                }
-            )
-        if self.include_election:
-            result_value = {None: 0.0, "loss": -1.0, "win": 1.0}.get(
-                state.election_result, 0.0
-            )
-            winner_value = {
-                None: 0.0,
-                "opposition": -1.0,
-                "player": 1.0,
-            }.get(state.last_election_winner, 0.0)
-            politics = {
-                "politics/poll_rate": state.poll_rate,
-                "politics/peak_poll_rate": state.peak_poll_rate,
-                "politics/active_situations": float(len(state.active_situations)),
-                "election/turns_until": float(state.election_turns_until),
-                "election/current_term": float(state.election_current_term),
-                "election/result": result_value,
-                "election/last_winner": winner_value,
-            }
-            row.update(
-                {
-                    name: _finite(value, name=name)
-                    for name, value in politics.items()
-                }
-            )
+        for name in self._active_finance_names:
+            source = _FINANCE_SOURCES[name]
+            row[name] = _finite(source(state), name=name)
+        for name in self._active_election_names:
+            source = _ELECTION_SOURCES[name]
+            row[name] = _finite(source(state), name=name)
         return row
 
     def to_dict(self) -> dict[str, object]:
@@ -164,15 +259,33 @@ class StateFeatureEncoder:
             "policy_names": list(self.policy_names),
             "include_finance": self.include_finance,
             "include_election": self.include_election,
+            "finance_names": (
+                None if self.finance_names is None else list(self.finance_names)
+            ),
+            "election_names": (
+                None if self.election_names is None else list(self.election_names)
+            ),
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "StateFeatureEncoder":
+        finance_names = payload.get("finance_names")
+        election_names = payload.get("election_names")
         return cls(
             value_names=tuple(str(name) for name in payload.get("value_names", [])),
             policy_names=tuple(str(name) for name in payload.get("policy_names", [])),
             include_finance=bool(payload.get("include_finance", True)),
             include_election=bool(payload.get("include_election", True)),
+            finance_names=(
+                None
+                if finance_names is None
+                else tuple(str(name) for name in finance_names)
+            ),
+            election_names=(
+                None
+                if election_names is None
+                else tuple(str(name) for name in election_names)
+            ),
         )
 
 
@@ -262,6 +375,118 @@ class StateSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class FeatureRoleSchema:
+    """Covariate roles for a fixed feature schema.
+
+    ``target_names`` are observed features the model must predict (the first
+    entry, :data:`ELECTORAL_SUPPORT_FEATURE`, is the headline objective).
+    ``treatment_names`` are player-controlled policy sliders: covariates that
+    stay known at every future step because the agent chooses them.  All
+    remaining columns are past-only covariates whose future values are
+    unknown and therefore predicted.
+    """
+
+    feature_names: tuple[str, ...]
+    target_names: tuple[str, ...]
+    treatment_names: tuple[str, ...]
+
+    @classmethod
+    def from_encoder(cls, encoder: StateFeatureEncoder) -> "FeatureRoleSchema":
+        treatments = tuple(
+            name
+            for name in encoder.feature_names
+            if name.startswith(TREATMENT_FEATURE_PREFIX)
+        )
+        treatment_set = set(treatments)
+        targets = [
+            name for name in encoder.feature_names if name not in treatment_set
+        ]
+        # The headline objective leads the predicted columns so consumers
+        # can index the primary target deterministically.
+        if ELECTORAL_SUPPORT_FEATURE in targets:
+            targets.remove(ELECTORAL_SUPPORT_FEATURE)
+            targets.insert(0, ELECTORAL_SUPPORT_FEATURE)
+        return cls(
+            feature_names=encoder.feature_names,
+            target_names=tuple(targets),
+            treatment_names=treatments,
+        )
+
+    def is_treatment(self, feature_name: str) -> bool:
+        return feature_name in self._treatment_set()
+
+    def _treatment_set(self) -> frozenset[str]:
+        return frozenset(self.treatment_names)
+
+
+def _fill_placeholder_zeros(ring: list[float]) -> list[float]:
+    """Replace serialized placeholder zeros with carried-forward values.
+
+    The game writes exact ``0`` into a node's history ring whenever its
+    simulation pass has not run yet, and some statistics (GDP among them)
+    are only recomputed periodically, so raw rings contain long zero runs
+    both before a node goes live and between its periodic samples.  The
+    player never sees those zeros: the UI keeps showing the last computed
+    value.  Carrying the most recent non-zero reading forward therefore
+    reconstructs the observable series instead of teaching the forecaster
+    that live series repeatedly collapse to zero.
+    """
+
+    filled: list[float] = []
+    carry = 0.0
+    for value in ring:
+        if value != 0.0:
+            carry = value
+        elif not filled:
+            continue
+        filled.append(carry)
+    return filled
+
+
+def _pre_game_snapshots(
+    state: SimulationState, schema: StateFeatureEncoder
+) -> list[StateSnapshot] | None:
+    """Replay the save's value rings as snapshots ending at ``state.turn``.
+
+    The rings are only aligned with the current turn when they were loaded
+    from the same snapshot; once real turns advance, the live observations
+    take over and the pre-game rows would overlap.  Features without a ring
+    (policies, finance fields, most politics fields) are held constant at
+    their current level, which is exactly the information a fresh game gives
+    the player about the pre-game period.
+    """
+
+    if state.value_histories_turn is None or state.value_histories_turn != state.turn:
+        return None
+    current = schema.encode(state)
+    oldest_first_rings: dict[str, list[float]] = {}
+    for name in schema.value_names:
+        ring = state.value_histories.get(name)
+        if ring:
+            oldest_first = [float(value) for value in reversed(ring)]
+            oldest_first_rings[f"value/{name}"] = _fill_placeholder_zeros(
+                oldest_first
+            )
+    if schema.include_election and state.poll_history:
+        oldest_first_rings[ELECTORAL_SUPPORT_FEATURE] = [
+            float(value) for value in reversed(state.poll_history)
+        ]
+    length = max((len(ring) for ring in oldest_first_rings.values()), default=0)
+    if length < 2:
+        return None
+    snapshots: list[StateSnapshot] = []
+    for offset in range(length - 1, -1, -1):
+        row = dict(current)
+        turn = state.turn - offset
+        for feature_name, ring in oldest_first_rings.items():
+            index = len(ring) - 1 - offset
+            if index >= 0:
+                row[feature_name] = float(ring[index])
+        snapshots.append(StateSnapshot(turn=turn, features=row))
+    return snapshots
+
+
+@dataclass(frozen=True, slots=True)
 class ForecastModelInput:
     """Plain-Python model input suitable for a local or remote backend."""
 
@@ -311,8 +536,17 @@ class AutoregressiveContext:
         state: SimulationState,
         *,
         encoder: StateFeatureEncoder | None = None,
+        include_value_histories: bool = False,
     ) -> "AutoregressiveContext":
         schema = encoder or StateFeatureEncoder.from_state(state)
+        if include_value_histories:
+            snapshots = _pre_game_snapshots(state, schema)
+            if snapshots is not None:
+                return cls(
+                    schema,
+                    tuple(snapshots),
+                    ((),) * (len(snapshots) - 1),
+                )
         return cls(schema, (StateSnapshot.from_state(state, schema),))
 
     @property
@@ -630,6 +864,40 @@ def score_forecast(
     return score + poll_weight * float(features.get("politics/poll_rate", 0.0))
 
 
+def forecast_debt_gdp_growth(
+    forecast: StateForecast, baseline: FeatureRow | None = None
+) -> float:
+    """Scale-free rise in predicted debt burden across the forecast path.
+
+    Debt, GDP, income, and expenditure are ordinary player-visible targets
+    the forecaster predicts for every step of the horizon; this reads that
+    predicted fiscal trajectory so scoring can act on it exactly like the
+    simulator oracle does.  With ``baseline`` (the latest observed feature
+    row) the measure runs from today's observation to the final predicted
+    step, so an immediate debt jump counts; otherwise it measures slope
+    inside the predicted window.  The measure is relative — debt growth
+    divided by GDP growth minus one — so mixing normalized gauges with
+    absolute currency is harmless.  Returns 0 when either column is absent.
+    """
+
+    start_row: FeatureRow = baseline if baseline is not None else forecast.first
+    final = forecast.final
+    if "value/GDP" not in start_row or "finance/debt" not in start_row:
+        return 0.0
+    start_gdp = float(start_row.get("value/GDP", 0.0))
+    start_debt = float(start_row.get("finance/debt", 0.0))
+    final_gdp = float(final.get("value/GDP", 0.0))
+    final_debt = float(final.get("finance/debt", 0.0))
+    eps = 1e-9
+    if abs(start_debt) < eps or abs(start_gdp) < eps:
+        return 0.0
+    try:
+        growth = (final_debt / start_debt) / (final_gdp / start_gdp) - 1.0
+    except ZeroDivisionError:
+        return 0.0
+    return growth if math.isfinite(growth) else 0.0
+
+
 @dataclass(frozen=True, slots=True)
 class ForecastDecision:
     """One model choice plus its later observed outcome."""
@@ -684,6 +952,79 @@ class ForecastTrace:
         )
 
 
+def diverse_warmup_plan(
+    state: SimulationState,
+    *,
+    data: SimulationData | None = None,
+    size: int = 6,
+    capital_share: float = 0.5,
+) -> tuple[PolicyAction, ...]:
+    """Build a deterministic starter program of legal single moves.
+
+    Warm-up exists to give an in-context forecaster interventional variety:
+    alternating small raises and lowers across distinct policies produces
+    treatment/response pairs without spending most of the political capital.
+    Options come from :func:`autocracy.simulator.list_available_actions`, so
+    every planned move is legal at planning time; the agent still re-checks
+    legality each warm-up turn and skips stale entries.
+    """
+
+    options = simulator.list_available_actions(state, data=data)
+    # Cheapest moves first so a fixed capital share buys as many distinct
+    # raise/lower contrasts as possible.
+    ordered = sorted(
+        options,
+        key=lambda option: (
+            round(option.cost, 4),
+            option.policy_name,
+            option.action_type,
+            round(option.delta, 6),
+        ),
+    )
+    pools = (
+        [o for o in ordered if o.action_type in {"raise", "introduce"}],
+        [o for o in ordered if o.action_type == "lower"],
+    )
+    budget = state.political_capital * capital_share
+    spent = 0.0
+    plan: list[PolicyAction] = []
+    used_policies: set[str] = set()
+    cursors = [0, 0]
+    preferred = 0
+    while len(plan) < size:
+        progressed = False
+        for offset in range(2):
+            pool_index = (preferred + offset) % 2
+            pool = pools[pool_index]
+            cursor = cursors[pool_index]
+            while cursor < len(pool):
+                option = pool[cursor]
+                cursor += 1
+                if option.policy_name in used_policies:
+                    continue
+                if spent + option.cost > budget + simulator.EPSILON:
+                    continue
+                plan.append(
+                    PolicyAction(
+                        policy_name=option.policy_name,
+                        delta=option.delta,
+                        action_type=option.action_type,
+                    )
+                )
+                used_policies.add(option.policy_name)
+                spent += option.cost
+                progressed = True
+                break
+            cursors[pool_index] = cursor
+            if progressed:
+                break
+        if not progressed:
+            # Every pool is exhausted or unaffordable within the budget.
+            break
+        preferred = (preferred + 1) % 2
+    return tuple(plan)
+
+
 class TimeSeriesPolicyAgent(BaseAgent):
     """Choose policy actions from autoregressive state forecasts.
 
@@ -692,6 +1033,14 @@ class TimeSeriesPolicyAgent(BaseAgent):
     future trajectory conditioned on each candidate, selects the best score,
     executes only that batch in the simulator, and appends the observed state
     to the context before the next decision.
+
+    ``warmup_plan`` runs a scripted sequence of moves for the first decision
+    turns instead of trusting the forecaster's zero-shot preferences.  Every
+    executed warm-up transition enters the context, so the model observes real
+    treatment/response pairs before it starts choosing.  After warm-up,
+    ``reverse_window``/``reverse_penalty`` damp flip-flops: a candidate that
+    reverses an action taken within the last ``reverse_window`` transitions
+    on the same policy loses ``reverse_penalty`` score points.
     """
 
     def __init__(
@@ -707,6 +1056,17 @@ class TimeSeriesPolicyAgent(BaseAgent):
         candidate_limit: int | None = 32,
         random_seed: int | None = None,
         objective: Callable[[FeatureRow], float] = score_forecast,
+        visible_features_only: bool = False,
+        seed_pre_game_history: bool = False,
+        warmup_plan: Sequence[PolicyAction | ActionRecord] | None = None,
+        reverse_window: int = 0,
+        reverse_penalty: float = 0.0,
+        warmup_batch_size: int = 1,
+        max_actions_per_turn: int = 1,
+        batch_candidate_limit: int | None = None,
+        debt_growth_penalty: float = 0.0,
+        max_action_delta: float | None = None,
+        score_horizon_mean: bool = False,
     ) -> None:
         super().__init__(
             country=country,
@@ -714,24 +1074,83 @@ class TimeSeriesPolicyAgent(BaseAgent):
             state=state,
             config=config,
         )
+        if reverse_window < 0:
+            raise ValueError("reverse_window must be non-negative")
+        if max_actions_per_turn < 1:
+            raise ValueError("max_actions_per_turn must be at least one")
+        if batch_candidate_limit is not None and batch_candidate_limit < 1:
+            raise ValueError("batch_candidate_limit must be at least one or None")
         self.forecaster = forecaster
-        self.feature_encoder = encoder or StateFeatureEncoder.from_state(
-            self.state
-        )
+        self.visible_features_only = visible_features_only
+        self.seed_pre_game_history = seed_pre_game_history
+        self.feature_encoder = encoder or self._default_encoder(self.state)
+        self.role_schema = FeatureRoleSchema.from_encoder(self.feature_encoder)
         self.forecast_horizon = forecast_horizon
         self.candidate_limit = candidate_limit
         self.random_seed = random_seed
         self._random = random.Random(random_seed) if random_seed is not None else None
         self.objective = objective
-        self.context = AutoregressiveContext.from_state(
-            self.state,
-            encoder=self.feature_encoder,
+        self.warmup_plan: list[ActionRecord] = (
+            [ActionRecord.from_action(action) for action in warmup_plan]
+            if warmup_plan is not None
+            else []
         )
+        self.warmup_turns_taken = 0
+        self.reverse_window = reverse_window
+        if warmup_batch_size < 1:
+            raise ValueError("warmup_batch_size must be at least one")
+        self.warmup_batch_size = warmup_batch_size
+        self.reverse_penalty = float(reverse_penalty)
+        self.max_actions_per_turn = max_actions_per_turn
+        self.batch_candidate_limit = batch_candidate_limit
+        self.debt_growth_penalty = float(debt_growth_penalty)
+        self.max_action_delta = (
+            None if max_action_delta is None else float(max_action_delta)
+        )
+        # When set, candidates are ranked by the objective averaged over the
+        # whole predicted path instead of the final step alone: a move whose
+        # gain is a single-step blip scores less than one that compounds.
+        self.score_horizon_mean = bool(score_horizon_mean)
+        self.context = self._initial_context()
         self.decisions: list[ForecastDecision] = []
         self.last_decision: ForecastDecision | None = None
 
+    @property
+    def in_warmup(self) -> bool:
+        return bool(self.warmup_plan)
+
+    def _default_encoder(self, state: SimulationState) -> StateFeatureEncoder:
+        if self.visible_features_only:
+            return StateFeatureEncoder.from_visible_state(state, data=self.data)
+        return StateFeatureEncoder.from_state(state)
+
+    def _initial_context(self) -> AutoregressiveContext:
+        return AutoregressiveContext.from_state(
+            self.state,
+            encoder=self.feature_encoder,
+            include_value_histories=self.seed_pre_game_history,
+        )
+
     def _candidate_batches(self, options) -> list[tuple[PolicyAction, ...]]:
-        ordered = list(options)
+        """Enumerate legal action batches for this turn.
+
+        Every batch — including multi-action ones — must satisfy the hard
+        per-turn budget: the summed political-capital cost of its actions may
+        not exceed the capital available at the start of the turn.  Singles
+        are bounded by ``candidate_limit`` (which includes the no-op); pairs
+        and larger combinations are formed from that same sampled option
+        pool and additionally capped by ``batch_candidate_limit``.
+        ``max_action_delta``, when set, restricts the pool to smaller slider
+        steps so the agent compounds many modest moves instead of a few
+        large ones.
+        """
+
+        ordered = [
+            option
+            for option in options
+            if self.max_action_delta is None
+            or abs(option.delta) <= self.max_action_delta + simulator.EPSILON
+        ]
         if self.candidate_limit is not None:
             if self.candidate_limit < 1:
                 raise ValueError("candidate_limit must be at least one or None")
@@ -759,6 +1178,30 @@ class TimeSeriesPolicyAgent(BaseAgent):
             )
             for option in ordered
         )
+        if self.max_actions_per_turn >= 2:
+            capital = self.state.political_capital
+            combos = [
+                tuple(
+                    PolicyAction(
+                        policy_name=option.policy_name,
+                        delta=option.delta,
+                        action_type=option.action_type,
+                    )
+                    for option in combo
+                )
+                for combo in itertools.combinations(ordered, 2)
+                if combo[0].policy_name != combo[1].policy_name
+                and combo[0].cost + combo[1].cost <= capital + simulator.EPSILON
+            ]
+            combos.sort(key=self._action_key)
+            if self.batch_candidate_limit is not None and len(combos) > (
+                self.batch_candidate_limit
+            ):
+                if self._random is not None:
+                    combos = self._random.sample(combos, self.batch_candidate_limit)
+                else:
+                    combos = combos[: self.batch_candidate_limit]
+            batches.extend(combos)
         return batches
 
     @staticmethod
@@ -768,29 +1211,143 @@ class TimeSeriesPolicyAgent(BaseAgent):
             for action in actions
         )
 
+    def _pop_legal_warmup_actions(
+        self, options: Sequence[PolicyActionOption], limit: int
+    ) -> tuple[PolicyAction, ...]:
+        """Return the next legal warm-up moves, up to ``limit`` this turn.
+
+        Planned moves whose option no longer exists (or is unaffordable,
+        alone or together with the moves already picked this turn) are
+        skipped so stale entries cannot stall the schedule.
+        """
+
+        chosen: list[PolicyAction] = []
+        committed_cost = 0.0
+        while len(chosen) < limit and self.warmup_plan:
+            planned = self.warmup_plan.pop(0)
+            matched: PolicyActionOption | None = None
+            for option in options:
+                same_move = (
+                    option.policy_name == planned.policy_name
+                    and (option.action_type or "") == (planned.action_type or "")
+                    and abs(option.delta - planned.delta) <= simulator.EPSILON
+                )
+                if same_move:
+                    matched = option
+                    break
+            if matched is None:
+                continue
+            new_total = committed_cost + matched.cost
+            if new_total > self.state.political_capital + simulator.EPSILON:
+                continue
+            committed_cost = new_total
+            chosen.append(
+                PolicyAction(
+                    policy_name=planned.policy_name,
+                    delta=planned.delta,
+                    action_type=planned.action_type,
+                )
+            )
+        return tuple(chosen)
+
+    def _recent_actions(self, window: int) -> list[ActionRecord]:
+        recent: list[ActionRecord] = []
+        for transition in reversed(self.context.actions):
+            for action in transition:
+                recent.append(action)
+                if len(recent) >= window:
+                    return recent
+        return recent
+
+    def _reverse_adjusted_score(
+        self,
+        actions: Sequence[PolicyAction],
+        score: float,
+        recent: Sequence[ActionRecord],
+    ) -> float:
+        for action in actions:
+            for previous in recent:
+                if previous.policy_name != action.policy_name:
+                    continue
+                # Opposite-direction move on a recently touched slider.
+                if previous.delta * action.delta < 0.0:
+                    return score - self.reverse_penalty
+        return score
+
     def choose_actions(self, state: SimulationState, options) -> tuple[PolicyAction, ...]:
         if state.turn != self.context.current_turn:
-            self.context = AutoregressiveContext.from_state(
-                state, encoder=self.feature_encoder
-            )
+            self.context = self._initial_context()
             self.decisions.clear()
         candidates = self._candidate_batches(options)
+
+        if self.warmup_plan:
+            scheduled = self._pop_legal_warmup_actions(
+                options, self.warmup_batch_size
+            )
+            if scheduled:
+                self.warmup_turns_taken += 1
+                model_input = self.context.model_input(
+                    scheduled, horizon=self.forecast_horizon
+                )
+                forecast = self.forecaster.predict(model_input)
+                score = float(self.objective(forecast.final))
+                self.last_decision = ForecastDecision(
+                    turn=state.turn,
+                    actions=_records(scheduled),
+                    forecast=forecast,
+                    score=score,
+                    candidate_count=1,
+                )
+                return scheduled
+            # Nothing legal remains; fall through to model-driven choice.
+
+        model_inputs = [
+            self.context.model_input(actions, horizon=self.forecast_horizon)
+            for actions in candidates
+        ]
+        batch_predict = getattr(self.forecaster, "predict_batch", None)
+        if callable(batch_predict):
+            forecasts = list(batch_predict(model_inputs))
+        else:
+            forecasts = [self.forecaster.predict(item) for item in model_inputs]
         best_actions: tuple[PolicyAction, ...] | None = None
         best_forecast: StateForecast | None = None
         best_score = -math.inf
-        for actions in candidates:
-            model_input = self.context.model_input(
-                actions, horizon=self.forecast_horizon
+        recent = (
+            self._recent_actions(self.reverse_window)
+            if self.reverse_window and self.reverse_penalty
+            else ()
+        )
+        feature_names = self.feature_encoder.feature_names
+        fiscal_baseline = dict(
+            zip(
+                feature_names,
+                self.context.states[-1].row(feature_names),
             )
-            forecast = self.forecaster.predict(model_input)
+        )
+        for actions, forecast in zip(candidates, forecasts):
             if forecast.horizon < self.forecast_horizon:
                 raise ValueError(
                     f"forecaster returned {forecast.horizon} steps, "
                     f"expected {self.forecast_horizon}"
                 )
-            score = float(self.objective(forecast.final))
+            if self.score_horizon_mean:
+                score = sum(
+                    float(self.objective(row)) for row in forecast.values
+                ) / max(len(forecast.values), 1)
+            else:
+                score = float(self.objective(forecast.final))
             if not math.isfinite(score):
                 raise ValueError(f"forecast objective returned a non-finite score: {score!r}")
+            if self.debt_growth_penalty:
+                # The forecaster predicts the visible fiscal lines (debt,
+                # GDP, income, expenditure) for every horizon step; make a
+                # rising predicted debt-to-GDP ratio cost score.
+                score -= self.debt_growth_penalty * max(
+                    0.0,
+                    forecast_debt_gdp_growth(forecast, fiscal_baseline),
+                )
+            score = self._reverse_adjusted_score(actions, score, recent)
             if (
                 best_actions is None
                 or score > best_score
@@ -836,10 +1393,9 @@ class TimeSeriesPolicyAgent(BaseAgent):
 
     def load_state(self, path: str | Path) -> None:
         super().load_state(path)
-        self.feature_encoder = StateFeatureEncoder.from_state(self.state)
-        self.context = AutoregressiveContext.from_state(
-            self.state, encoder=self.feature_encoder
-        )
+        self.feature_encoder = self._default_encoder(self.state)
+        self.role_schema = FeatureRoleSchema.from_encoder(self.feature_encoder)
+        self.context = self._initial_context()
         self.decisions.clear()
         self.last_decision = None
 
@@ -850,7 +1406,9 @@ __all__ = [
     "AutoregressiveContext",
     "Chronos2Forecaster",
     "DEFAULT_FORECAST_WEIGHTS",
+    "ELECTORAL_SUPPORT_FEATURE",
     "EmpiricalActionForecaster",
+    "FeatureRoleSchema",
     "ForecastDecision",
     "ForecastModelInput",
     "ForecastTrace",
@@ -859,5 +1417,9 @@ __all__ = [
     "StateForecast",
     "StateSnapshot",
     "TimeSeriesPolicyAgent",
+    "TREATMENT_FEATURE_PREFIX",
+    "diverse_warmup_plan",
+    "forecast_debt_gdp_growth",
+    "player_visible_value_names",
     "score_forecast",
 ]
