@@ -160,7 +160,7 @@ def main() -> None:
     parser.add_argument("--max-actions-per-turn", type=int, default=2)
     parser.add_argument("--batch-candidate-limit", type=int, default=96)
     parser.add_argument("--debt-growth-penalty", type=float, default=0.25)
-    parser.add_argument("--memory-effect-weight", type=float, default=2.5)
+    parser.add_argument("--memory-effect-weight", type=float, default=4.0)
     parser.add_argument(
         "--score-horizon-mean",
         action=argparse.BooleanOptionalAction,

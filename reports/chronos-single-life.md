@@ -79,8 +79,52 @@ Interpretation: sampling and time are *not* the constraint — the pools
 contain plenty of winning moves every turn, and perfect ranking converts
 them into landslide campaigns under identical mechanics. The chronos-2-small
 world model's near-zero treatment attribution is the binding constraint, so
-forecaster quality (e.g. the 120M `autogluon/chronos-2` base instead of the
-28M small) is the lever with measured headroom.
+forecaster quality is the lever with measured headroom.
+
+### Does the larger Chronos help? Measured: no
+
+`autogluon/chronos-2` (120M base, ~0.5 GB — disk was never a blocker at
+54 GB free) behind the identical probe:
+
+| Model | ρ(predicted Δpoll, true) | Predicted spread |
+| --- | --- | --- |
+| chronos-2-small (28M) | +0.02 … +0.14 | 0.003–0.011 |
+| chronos-2 base (120M) | **−0.11 … −0.01** | 0.003–0.004 |
+
+Capacity does not buy treatment attribution for this system — consistent
+with the Chronos-2 paper's own size ablation (~1 % skill gap on GIFT-Eval).
+Swapping models is a one-flag change (`--model autogluon/chronos-2`); any
+future forecaster should be admitted by the same probe-ρ instrument rather
+than assumed.
+
+### Ablations after the diagnostics
+
+| Change | Outcome (10–20 lives each) |
+| --- | --- |
+| Declared-cost prior `fiscal_prior_weight` 1.0 / 0.3 / 0.15 | crises eliminated but spending paralysed: 0 wins, margins −879…−1214 — rejected (the winning path *spends* its way to polls ≈1.0) |
+| `memory_effect_weight` 2.5 → **4.0** | mean margin −517 → −470, wins 2→3 per 10 |
+| Windowed fiscal credit (recurring programme costs charged level-to-level to their sponsor) | mean −470 → −386, best first-election margin +86 |
+| `max_actions_per_turn` 3 | attribution muddied, overspending: 1/10 wins — rejected |
+
+Shipped defaults now: memory weight 4.0, windowed fiscal credit, fiscal
+prudence 1.0, no declared-cost prior term.
+
+## Final configuration (20 lives)
+
+```
+margin: mean=-597 median=-799 best=+86 | DebtCrisis in 15/20 lives | first-election WINS 4/20
+```
+
+| Life | Election margins | Final poll |
+| --- | --- | --- |
+| seed …815 | **+18 / +592 / +677** | 0.719 |
+| seed …817 | **+86 / +758 / +938** | 0.798 |
+| seed …816 | **+17 / +956 / +1051** | 0.788 |
+| seed …830 | **+48 / +851 / +1192** | 0.853 |
+
+Every winner again sweeps both re-elections. For calibration: no-op loses
+at −1116; the simulator oracle wins election 1 at +23…+306 and the truth-
+ranked ceiling wins 8/8 at +321…+726.
 
 ## Artifacts
 

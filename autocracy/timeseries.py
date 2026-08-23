@@ -1155,6 +1155,9 @@ class TimeSeriesPolicyAgent(BaseAgent):
         # expenditure).  Symmetric: balance-repairing moves earn credit.
         self.fiscal_prudence_weight = float(fiscal_prudence_weight)
         self._fiscal_history: list[float] = []
+        # Running sum of expenditure-normalised balance deltas; windowed
+        # fiscal credit is measured level-to-level against this.
+        self._cumulative_balance = 0.0
         # The game displays the £ effect of dragging a slider before you
         # commit it; options carry that estimate as ``financial_delta``.
         # While in deficit, a candidate's known fiscal signature is scored
@@ -1162,7 +1165,8 @@ class TimeSeriesPolicyAgent(BaseAgent):
         self.fiscal_prior_weight = float(fiscal_prior_weight)
         self._option_financials: dict[tuple[str, str, float], float] = {}
         # Actions awaiting their multi-turn effect window: [remaining
-        # transitions, poll at execution time, actions].
+        # transitions, poll at execution time, actions, cumulative balance
+        # at execution time].
         self._pending_credits: list[list[object]] = []
         # First-step feature row the forecaster predicted for this turn's
         # no-op candidate; the recorder uses it as the counterfactual.
@@ -1726,8 +1730,12 @@ class TimeSeriesPolicyAgent(BaseAgent):
         ) / expenditure_ref
         self._fiscal_history.append(fiscal_delta)
         del self._fiscal_history[: -self.memory_drift_window]
+        self._cumulative_balance += fiscal_delta
         # Age outstanding windows first; a batch pushed below never pays for
-        # the transition it was executed in.
+        # the transition it was executed in.  Windowed fiscal credit spans
+        # the cumulative balance movement, so a programme's *recurring* cost
+        # is charged to its sponsor instead of to whichever actions happen
+        # to execute in later turns.
         for entry in self._pending_credits:
             entry[0] = float(entry[0]) - 1
         due = [entry for entry in self._pending_credits if entry[0] <= 0]
@@ -1735,15 +1743,23 @@ class TimeSeriesPolicyAgent(BaseAgent):
             entry for entry in self._pending_credits if entry[0] > 0
         ]
         for entry in due:
-            window_delta = latest_poll - entry[1]
+            window_poll = latest_poll - entry[1]
+            window_fiscal = self._cumulative_balance - entry[3]
             self.treatment_memory.record(
                 entry[2],
-                observed_delta=window_delta,
+                observed_delta=window_poll,
                 drift=drift * self.memory_credit_lag,
+                fiscal_delta=window_fiscal,
+                fiscal_drift=fiscal_drift * self.memory_credit_lag,
             )
         if actions and self.memory_credit_lag > 0:
             self._pending_credits.append(
-                [float(self.memory_credit_lag), latest_poll, tuple(actions)]
+                [
+                    float(self.memory_credit_lag),
+                    latest_poll,
+                    tuple(actions),
+                    self._cumulative_balance,
+                ]
             )
         self.treatment_memory.record(
             actions,
@@ -1796,6 +1812,8 @@ class TimeSeriesPolicyAgent(BaseAgent):
         self.decisions.clear()
         self.last_decision = None
         self._pending_credits = []
+        self._cumulative_balance = 0.0
+        self._fiscal_history = []
 
 
 __all__ = [

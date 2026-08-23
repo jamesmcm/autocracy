@@ -326,10 +326,19 @@ uv run --extra chronos python experiments/chronos_learning.py \
 ```
 
 Each run is one life from `uk0.xml`: win the first election, then survive two
-re-elections with the same live campaign. At the shipped defaults, 3 of 20
-lives win the first election (margins +18 to +227) and every winner then
-sweeps both re-elections with growing margins (+592/+677,
-+998/+1126, +851/+1192) and final polls of 0.72–0.85 — the online memory
+re-elections with the same live campaign. At the shipped defaults, 4 of 20
+lives win the first election (margins +17 to +86) and every winner then
+sweeps both re-elections with growing margins (+592/+677, +758/+938,
++956/+1051, +851/+1192) and final polls of 0.72–0.85 — the online memory
 keeps compounding once past the first-election hump. Lives that hit the
-mid-term DebtCrisis still lose; avoiding that cliff without any fiscal priors
-beyond the deficit rule remains the open gap to the simulator oracle.
+mid-term DebtCrisis still lose.
+
+`experiments/diagnose_learning.py` quantifies *why*: probe mode measures
+Spearman ρ between predicted and true per-candidate poll deltas (≈0 for both
+chronos-2-small and the 120M chronos-2 base), while truth mode shows that
+ranking the same candidate pools by their true one-turn effect wins 8/8
+lives. The strategy is model-limited, not sampling-limited; any future
+forecaster should be admitted by measuring its probe-ρ first. The declared
+£ cost of each slider move rides on every option (`financial_delta`) but a
+deficit-scoring term built on it proved counterproductive — the winning path
+spends heavily and outruns the debt spiral rather than avoiding it.
