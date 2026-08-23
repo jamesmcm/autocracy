@@ -101,6 +101,7 @@ def build_agent(memory: TreatmentEffectMemory, args, *, seed_offset: int = 0) ->
         score_horizon_mean=args.score_horizon_mean,
         balance_guard_penalty=args.balance_guard_penalty,
         fiscal_prudence_weight=args.fiscal_prudence_weight,
+        fiscal_prior_weight=args.fiscal_prior_weight,
     )
 
 
@@ -180,6 +181,14 @@ def main() -> None:
         default=1.0,
         help="While in deficit, score candidates with their measured "
         "balance effect (expenditure-normalised share per turn).",
+    )
+    parser.add_argument(
+        "--fiscal-prior-weight",
+        type=float,
+        default=0.0,
+        help="While in deficit, score candidates with the game-declared £ "
+        "effect of each move (option financial_delta, expenditure-"
+        "normalised) — known before any measurement.",
     )
     parser.add_argument("--memory-drift-window", type=int, default=8)
     parser.add_argument(

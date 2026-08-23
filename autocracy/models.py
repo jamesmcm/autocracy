@@ -430,6 +430,10 @@ class PolicyActionOption:
     resulting_level: float
     cost: float
     implementation_time: float
+    # Estimated per-turn balance change of this move at current context
+    # (income minus cost), in currency units.  Positive improves the budget.
+    # This mirrors the £ figure the game shows when dragging a slider.
+    financial_delta: float = 0.0
 
 
 @dataclass(slots=True)

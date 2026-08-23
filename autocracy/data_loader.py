@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -376,7 +377,9 @@ def _parse_section_line(line: str) -> Optional[Tuple[str, str]]:
     return key, value.strip().strip('"')
 
 
-def load_country_setup(root: Path, country: str) -> CountrySetup:
+@lru_cache(maxsize=32)
+def _load_country_setup_cached(root_str: str, country: str) -> CountrySetup:
+    root = Path(root_str)
     mission_dir = root / "missions" / country
     mission_file = mission_dir / f"{country}.txt"
     if not mission_file.exists():
@@ -427,6 +430,18 @@ def load_country_setup(root: Path, country: str) -> CountrySetup:
         term_length=int(_safe_float(config_data.get("term_length", "16"), default=16)),
         max_terms=int(_safe_float(config_data.get("max_terms", "-1"), default=-1)),
     )
+
+
+def load_country_setup(root: Path, country: str) -> CountrySetup:
+    """Parse a mission file, memoised per (root, country).
+
+    The setup is immutable reference data read on every turn transition and
+    now also per option enumeration; re-parsing it each call is wasted I/O
+    and one more chance for a transient filesystem error to kill a long
+    experiment.
+    """
+
+    return _load_country_setup_cached(str(root), country)
 
 
 def load_country_overrides(mission_dir: Path) -> List[dict]:

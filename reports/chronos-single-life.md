@@ -57,6 +57,31 @@ deficit" — both left as future work. Clean lives average a −201 margin with
 final polls ≈0.53, so the remaining distance to consistent wins is exactly
 the crisis.
 
+## Model-limited vs sampling-limited: the measurement
+
+`experiments/diagnose_learning.py` separates the two hypotheses with two
+instrumented modes sharing the shipped configuration:
+
+* **probe** — normal chronos lives; each turn every candidate batch is also
+  branched through the real simulator for its true one-turn poll delta;
+* **truth** — identical pools, cadence, and capital rules, but candidates
+  ranked by that true delta (perfect world model, measurement only).
+
+| Instrument | Result |
+| --- | --- |
+| Spearman ρ(predicted Δpoll, true Δpoll) across candidates | **+0.02 … +0.14** (mean per life, 4 lives) |
+| Predicted candidate spread vs true spread | ~0.003–0.011 vs ±0.05+ (predictions nearly flat) |
+| Executed action's truthful percentile in pool | top 23–42 % (good, rarely best) |
+| True winners (≥+3 pp) available per pool | **9–26 of 145 candidates, every turn** |
+| Truth-ranked ceiling, first election / all terms | **8/8 wins (+321…+726), 8/8 survivals**, margins to +1873 |
+
+Interpretation: sampling and time are *not* the constraint — the pools
+contain plenty of winning moves every turn, and perfect ranking converts
+them into landslide campaigns under identical mechanics. The chronos-2-small
+world model's near-zero treatment attribution is the binding constraint, so
+forecaster quality (e.g. the 120M `autogluon/chronos-2` base instead of the
+28M small) is the lever with measured headroom.
+
 ## Artifacts
 
 * `reports/chronos_single_life.json` — per-life outcomes for the headline run

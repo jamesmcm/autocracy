@@ -407,6 +407,58 @@ def test_fiscal_channel_measures_balance_effects():
     )
 
 
+def test_options_carry_game_declared_financial_delta():
+    """The £ effect shown when dragging a slider rides on every option."""
+
+    state, _ = simulator.get_initial_state("uk")
+    options = simulator.list_available_actions(state)
+
+    # Generic sign checks — no specific policy knowledge: the roster must
+    # contain declared net spenders (introductions) and declared earners,
+    # and tax raises in particular must improve the balance.
+    introduces = [o for o in options if o.action_type == "introduce"]
+    assert any(o.financial_delta < 0 for o in introduces)
+    tax_raises = [
+        o for o in options
+        if o.action_type == "raise" and "Tax" in o.policy_name
+    ]
+    assert tax_raises
+    assert all(o.financial_delta > 0 for o in tax_raises)
+
+
+def test_fiscal_prior_uses_declared_cost_before_any_measurement():
+    from dataclasses import replace as dataclass_replace
+
+    from autocracy.models import PolicyActionOption
+
+    agent = TimeSeriesPolicyAgent(
+        _BalanceForecaster(),
+        forecast_horizon=2,
+        candidate_limit=None,
+        random_seed=7,
+        visible_features_only=True,
+        fiscal_prior_weight=5.0,
+    )
+    deficit_state = dataclass_replace(
+        agent.state,
+        total_income=200_000.0,
+        total_expenditure=300_000.0,
+    )
+    template = _first_available_option(agent)
+    cheap = dataclass_replace(template, policy_name="PolicyCheap")
+    pricey = dataclass_replace(template, policy_name="PolicyPricey")
+
+    chosen = agent.choose_actions(deficit_state, [cheap, pricey])
+    assert isinstance(chosen, tuple)
+
+    # The declared deltas must reach the scoring path via the option map.
+    agent._candidate_batches([cheap, pricey])
+    assert set(agent._option_financials) == {
+        ("PolicyCheap", template.action_type or "", round(template.delta, 6)),
+        ("PolicyPricey", template.action_type or "", round(template.delta, 6)),
+    }
+
+
 def test_exploration_countdown_scales_bonus_by_term_share():
     """Curiosity must fade as the election approaches within one life."""
 

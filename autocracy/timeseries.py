@@ -1077,6 +1077,7 @@ class TimeSeriesPolicyAgent(BaseAgent):
         memory_credit_lag: int = 0,
         balance_guard_penalty: float = 0.0,
         fiscal_prudence_weight: float = 0.0,
+        fiscal_prior_weight: float = 0.0,
     ) -> None:
         super().__init__(
             country=country,
@@ -1154,6 +1155,12 @@ class TimeSeriesPolicyAgent(BaseAgent):
         # expenditure).  Symmetric: balance-repairing moves earn credit.
         self.fiscal_prudence_weight = float(fiscal_prudence_weight)
         self._fiscal_history: list[float] = []
+        # The game displays the £ effect of dragging a slider before you
+        # commit it; options carry that estimate as ``financial_delta``.
+        # While in deficit, a candidate's known fiscal signature is scored
+        # directly (normalised by expenditure) — no measurement needed.
+        self.fiscal_prior_weight = float(fiscal_prior_weight)
+        self._option_financials: dict[tuple[str, str, float], float] = {}
         # Actions awaiting their multi-turn effect window: [remaining
         # transitions, poll at execution time, actions].
         self._pending_credits: list[list[object]] = []
@@ -1214,6 +1221,14 @@ class TimeSeriesPolicyAgent(BaseAgent):
                 option.action_type or "",
                 round(option.delta, 6),
             ): float(option.cost)
+            for option in ordered
+        }
+        self._option_financials = {
+            (
+                option.policy_name,
+                option.action_type or "",
+                round(option.delta, 6),
+            ): float(getattr(option, "financial_delta", 0.0))
             for option in ordered
         }
         if self.candidate_limit is not None:
@@ -1471,6 +1486,9 @@ class TimeSeriesPolicyAgent(BaseAgent):
         self._noop_forecast_row = (
             dict(forecasts[noop_index].first) if noop_index is not None else None
         )
+        # Retained for diagnostics: per-candidate predictions of this turn.
+        self._last_candidates = list(candidates)
+        self._last_forecasts = list(forecasts)
         best_actions: tuple[PolicyAction, ...] | None = None
         best_forecast: StateForecast | None = None
         best_score = -math.inf
@@ -1541,6 +1559,11 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     remaining = max(0.0, float(state.election_turns_until))
                     exploration *= min(1.0, remaining / self._initial_term_length)
                 score += exploration
+            if self.fiscal_prior_weight and self._in_deficit():
+                score += self.fiscal_prior_weight * (
+                    self._known_fiscal_delta(actions)
+                    / self._expenditure_reference()
+                )
             score = self._balance_guard_penalty(actions, forecast, score)
             if (
                 best_actions is None
@@ -1590,6 +1613,33 @@ class TimeSeriesPolicyAgent(BaseAgent):
             - float(current.get("finance/total_expenditure", 0.0))
         )
         return balance < -simulator.EPSILON
+
+    def _expenditure_reference(self) -> float:
+        """Latest observed expenditure, the normaliser for fiscal terms."""
+
+        names = self.feature_encoder.feature_names
+        current = dict(zip(names, self.context.states[-1].row(names)))
+        return max(
+            abs(float(current.get("finance/total_expenditure", 0.0))),
+            simulator.EPSILON,
+        )
+
+    def _known_fiscal_delta(
+        self, actions: Sequence[PolicyAction]
+    ) -> float:
+        """Sum of option-declared £ effects for a candidate batch."""
+
+        total = 0.0
+        for action in actions:
+            total += self._option_financials.get(
+                (
+                    action.policy_name,
+                    action.action_type or "",
+                    round(action.delta, 6),
+                ),
+                0.0,
+            )
+        return total
 
     def _balance_guard_penalty(
         self,

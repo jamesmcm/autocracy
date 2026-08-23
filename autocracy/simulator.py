@@ -4029,15 +4029,50 @@ def list_available_actions(
     state: SimulationState,
     data: Optional[SimulationData] = None,
 ) -> List[PolicyActionOption]:
-    """Enumerate feasible single-step policy moves based on slider metadata and capital."""
+    """Enumerate feasible single-step policy moves based on slider metadata and capital.
+
+    Every option carries ``financial_delta``: the estimated per-turn change
+    in (income − cost) for this policy at the requested slider position,
+    using the same budget arithmetic as :func:`_recalculate_budget`.  This is
+    the £ figure the game shows while dragging a slider, so agents can weigh
+    affordability before committing political capital.
+    """
 
     data = data or load_simulation_data()
     options: List[PolicyActionOption] = []
+    context = {**state.values, **state.policies, **state.situations}
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    wealth_mod = setup.wealth_mod if setup.wealth_mod > 0.0 else 1.0
+
+    def policy_balance(name: str, level: float, active: bool) -> float:
+        definition = data.policies[name]
+        if not active:
+            return 0.0
+        return (
+            _policy_income_amount(
+                definition,
+                level,
+                context,
+                multiplier=state.policy_income_multipliers.get(name),
+                scalar=state.policy_income_scalars.get(name, 1.0),
+                wealth_mod=wealth_mod,
+            )
+            - _policy_cost_amount(
+                definition,
+                level,
+                context,
+                multiplier=state.policy_cost_multipliers.get(name),
+                scalar=state.policy_cost_scalars.get(name, 1.0),
+                wealth_mod=wealth_mod,
+            )
+        )
+
     for policy in data.policies.values():
         current = state.policies.get(policy.name, 0.0)
         slider = _get_slider(data, policy)
         uncancellable = _is_uncancellable(policy)
         capital = state.political_capital
+        active = state.policy_active.get(policy.name, current > EPSILON)
         if current <= EPSILON:
             if uncancellable:
                 current = _default_slider_level(slider)
@@ -4056,9 +4091,14 @@ def list_available_actions(
                             resulting_level=target,
                             cost=policy.introduce_cost,
                             implementation_time=policy.implementation_time,
+                            financial_delta=(
+                                policy_balance(policy.name, target, True)
+                                - policy_balance(policy.name, current, False)
+                            ),
                         )
                     )
                 continue
+        current_balance = policy_balance(policy.name, current, active)
         raise_target = _next_level(current, slider, "raise")
         if raise_target is not None and raise_target - current > EPSILON and policy.raise_cost <= capital:
             options.append(
@@ -4069,6 +4109,10 @@ def list_available_actions(
                     resulting_level=raise_target,
                     cost=policy.raise_cost,
                     implementation_time=policy.implementation_time,
+                    financial_delta=(
+                        policy_balance(policy.name, raise_target, True)
+                        - current_balance
+                    ),
                 )
             )
         lower_target = _next_level(current, slider, "lower")
@@ -4086,6 +4130,10 @@ def list_available_actions(
                     resulting_level=lower_target,
                     cost=policy.lower_cost,
                     implementation_time=policy.implementation_time,
+                    financial_delta=(
+                        policy_balance(policy.name, lower_target, True)
+                        - current_balance
+                    ),
                 )
             )
         if not uncancellable and policy.cancel_cost <= capital:
@@ -4097,6 +4145,10 @@ def list_available_actions(
                     resulting_level=0.0,
                     cost=policy.cancel_cost,
                     implementation_time=policy.implementation_time,
+                    financial_delta=(
+                        policy_balance(policy.name, current, False)
+                        - current_balance
+                    ),
                 )
             )
     return options
