@@ -436,7 +436,12 @@ Chronos-2 runs can be compared over the same observed episode.
 
 See [`TIMESERIES.md`](TIMESERIES.md) for the complete model-input contract,
 covariate roles, trace schema, and the closed-loop control comparison against
-the simulator oracle (`reports/chronos-2-small-vs-oracle.md`).
+the simulator oracle (`reports/chronos-2-small-vs-oracle.md`). The same
+section documents the single-life active-learning loop
+(`autocracy.learning` + `experiments/chronos_learning.py`), in which the
+Chronos agent learns a treatment-effect memory purely from its own observed
+transitions and wins its first election without any scripted moves or oracle
+look-ahead.
 
 Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 

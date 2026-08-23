@@ -24,7 +24,7 @@ import json
 import math
 from pathlib import Path
 import random
-from typing import Callable, Mapping, Protocol, Sequence, TypeAlias
+from typing import TYPE_CHECKING, Callable, Mapping, Protocol, Sequence, TypeAlias
 
 from .agent import BaseAgent
 from .models import (
@@ -35,6 +35,9 @@ from .models import (
     SimulationState,
 )
 from . import simulator
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checkers
+    from .learning import TreatmentEffectMemory
 
 
 FeatureRow: TypeAlias = Mapping[str, float]
@@ -1067,6 +1070,13 @@ class TimeSeriesPolicyAgent(BaseAgent):
         debt_growth_penalty: float = 0.0,
         max_action_delta: float | None = None,
         score_horizon_mean: bool = False,
+        treatment_memory: "TreatmentEffectMemory | None" = None,
+        memory_effect_weight: float = 1.0,
+        memory_drift_window: int = 8,
+        exploration_countdown: bool = False,
+        memory_credit_lag: int = 0,
+        balance_guard_penalty: float = 0.0,
+        fiscal_prudence_weight: float = 0.0,
     ) -> None:
         super().__init__(
             country=country,
@@ -1111,6 +1121,46 @@ class TimeSeriesPolicyAgent(BaseAgent):
         # whole predicted path instead of the final step alone: a move whose
         # gain is a single-step blip scores less than one that compounds.
         self.score_horizon_mean = bool(score_horizon_mean)
+        self.treatment_memory = treatment_memory
+        self.memory_effect_weight = float(memory_effect_weight)
+        if memory_drift_window < 0:
+            raise ValueError("memory_drift_window must be non-negative")
+        self.memory_drift_window = int(memory_drift_window)
+        if treatment_memory is not None and (
+            ELECTORAL_SUPPORT_FEATURE
+            not in self.feature_encoder.feature_names
+        ):
+            raise ValueError(
+                "treatment memory records electoral support; the feature "
+                "encoder must include politics/poll_rate"
+            )
+        # Per-single-action political-capital costs captured while enumerating
+        # candidate batches, used to discount exploration bonuses.
+        self._option_costs: dict[tuple[str, str, float], float] = {}
+        # Single-life active learning: exploration is worth most early in a
+        # term and must vanish as the election approaches.  The scale is the
+        # share of the term still ahead at each decision.
+        self.exploration_countdown = bool(exploration_countdown)
+        if memory_credit_lag < 0:
+            raise ValueError("memory_credit_lag must be non-negative")
+        self.memory_credit_lag = int(memory_credit_lag)
+        # Budget-screen prudence: while the treasury runs a deficit, a
+        # candidate whose own forecast deepens it pays a score penalty.  The
+        # rule uses only displayed income/expenditure lines and their
+        # predicted next-step values — no policy metadata, no thresholds.
+        self.balance_guard_penalty = float(balance_guard_penalty)
+        # While the visible budget is in deficit, candidates are scored with
+        # their *measured* balance effect (learned channel, normalised by
+        # expenditure).  Symmetric: balance-repairing moves earn credit.
+        self.fiscal_prudence_weight = float(fiscal_prudence_weight)
+        self._fiscal_history: list[float] = []
+        # Actions awaiting their multi-turn effect window: [remaining
+        # transitions, poll at execution time, actions].
+        self._pending_credits: list[list[object]] = []
+        # First-step feature row the forecaster predicted for this turn's
+        # no-op candidate; the recorder uses it as the counterfactual.
+        self._noop_forecast_row: Mapping[str, float] | None = None
+        self._initial_term_length = max(1, int(self.state.election_turns_until))
         self.context = self._initial_context()
         self.decisions: list[ForecastDecision] = []
         self.last_decision: ForecastDecision | None = None
@@ -1151,22 +1201,27 @@ class TimeSeriesPolicyAgent(BaseAgent):
             if self.max_action_delta is None
             or abs(option.delta) <= self.max_action_delta + simulator.EPSILON
         ]
+        # Options are enumerated against the policy-neuron value, but actions
+        # apply against the slider target; when implementation lag separates
+        # the two, an option can clamp to "no change" and crash the real
+        # apply phase.  Drop those candidates up front.
+        ordered = [
+            option for option in ordered if self._moves_desired_level(option)
+        ]
+        self._option_costs = {
+            (
+                option.policy_name,
+                option.action_type or "",
+                round(option.delta, 6),
+            ): float(option.cost)
+            for option in ordered
+        }
         if self.candidate_limit is not None:
             if self.candidate_limit < 1:
                 raise ValueError("candidate_limit must be at least one or None")
             limit = max(0, self.candidate_limit - 1)
             if len(ordered) > limit:
-                if self._random is not None:
-                    ordered = self._random.sample(ordered, limit)
-                else:
-                    ordered = sorted(
-                        ordered,
-                        key=lambda option: (
-                            option.policy_name,
-                            option.action_type,
-                            option.resulting_level,
-                        ),
-                    )[:limit]
+                ordered = self._prioritize_options(ordered, limit)
         batches: list[tuple[PolicyAction, ...]] = [()]
         batches.extend(
             (
@@ -1197,12 +1252,111 @@ class TimeSeriesPolicyAgent(BaseAgent):
             if self.batch_candidate_limit is not None and len(combos) > (
                 self.batch_candidate_limit
             ):
-                if self._random is not None:
-                    combos = self._random.sample(combos, self.batch_candidate_limit)
-                else:
-                    combos = combos[: self.batch_candidate_limit]
+                combos = self._prioritize_combos(ordered, combos)
             batches.extend(combos)
         return batches
+
+    def _option_priority(self, option) -> float:
+        """Learned usefulness plus curiosity, with randomized novelty.
+
+        Never-tried options are ordered uniformly at random so each life
+        covers a different slice of the roster; once an action has samples,
+        its measured effect (plus a shrinking visit bonus) dominates.
+        """
+
+        assert self.treatment_memory is not None
+        estimate = self.treatment_memory.estimate(option)
+        if estimate is None:
+            scale = self.treatment_memory.exploration_bonus
+            if self._random is not None:
+                return self._random.uniform(0.0, scale)
+            return 0.5 * scale / (
+                1.0 + float(option.cost) / self.treatment_memory.reference_cost
+            )
+        jitter = (
+            self._random.uniform(0.0, 0.05 * self.treatment_memory.exploration_bonus)
+            if self._random
+            else 0.0
+        )
+        return estimate + self.treatment_memory._explore_bonus(
+            option, cost=float(option.cost)
+        ) + jitter
+
+    def _prioritize_options(self, ordered, limit: int):
+        """Pick which legal moves enter the forecast batch.
+
+        With a treatment memory the pool concentrates on the highest learned-
+        effect / highest-uncertainty options instead of a uniform sample —
+        candidate forecasts are expensive and flat rankings waste them.
+        """
+
+        if self.treatment_memory is not None:
+            ranked = sorted(
+                ordered,
+                key=lambda option: (
+                    -self._option_priority(option),
+                    option.policy_name,
+                    option.action_type,
+                    round(option.delta, 6),
+                ),
+            )
+            return ranked[:limit]
+        if self._random is not None:
+            return self._random.sample(ordered, limit)
+        # A bounded search must still be deterministic when no seed is given.
+        return sorted(
+            ordered,
+            key=lambda option: (
+                option.policy_name,
+                option.action_type,
+                option.resulting_level,
+            ),
+        )[:limit]
+
+    def _prioritize_combos(self, ordered, combos):
+        """Keep the pairs that combine the most promising singles."""
+
+        assert self.batch_candidate_limit is not None
+        if self.treatment_memory is None:
+            if self._random is not None:
+                return self._random.sample(combos, self.batch_candidate_limit)
+            return combos[: self.batch_candidate_limit]
+        priority = {
+            (
+                option.policy_name,
+                option.action_type or "",
+                round(option.delta, 6),
+            ): self._option_priority(option)
+            for option in ordered
+        }
+
+        def combo_priority(combo) -> float:
+            return sum(
+                priority.get(
+                    (
+                        action.policy_name,
+                        action.action_type or "",
+                        round(action.delta, 6),
+                    ),
+                    0.0,
+                )
+                for action in combo
+            )
+
+        combos = sorted(
+            combos,
+            key=lambda combo: (-combo_priority(combo), self._action_key(combo)),
+        )
+        return combos[: self.batch_candidate_limit]
+
+    def _moves_desired_level(self, option) -> bool:
+        """Check the option changes the slider target the apply phase uses."""
+
+        desired = self.state.policy_desired_throttles.get(option.policy_name)
+        if desired is None or option.action_type == "cancel":
+            return True
+        target = min(1.0, max(0.0, float(desired) + option.delta))
+        return abs(target - float(desired)) > simulator.EPSILON
 
     @staticmethod
     def _action_key(actions: Sequence[PolicyAction]) -> tuple:
@@ -1278,8 +1432,8 @@ class TimeSeriesPolicyAgent(BaseAgent):
         if state.turn != self.context.current_turn:
             self.context = self._initial_context()
             self.decisions.clear()
+        self._noop_forecast_row = None
         candidates = self._candidate_batches(options)
-
         if self.warmup_plan:
             scheduled = self._pop_legal_warmup_actions(
                 options, self.warmup_batch_size
@@ -1310,6 +1464,13 @@ class TimeSeriesPolicyAgent(BaseAgent):
             forecasts = list(batch_predict(model_inputs))
         else:
             forecasts = [self.forecaster.predict(item) for item in model_inputs]
+        # Remember the no-op counterfactual: the recorder de-trends observed
+        # movement against what the world model expected without any action,
+        # a sharper baseline than recent-transition medians.
+        noop_index = candidates.index(()) if () in candidates else None
+        self._noop_forecast_row = (
+            dict(forecasts[noop_index].first) if noop_index is not None else None
+        )
         best_actions: tuple[PolicyAction, ...] | None = None
         best_forecast: StateForecast | None = None
         best_score = -math.inf
@@ -1348,6 +1509,39 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     forecast_debt_gdp_growth(forecast, fiscal_baseline),
                 )
             score = self._reverse_adjusted_score(actions, score, recent)
+            if self.treatment_memory is not None:
+                # Learned treatment attribution from observed transitions:
+                # de-trended poll effects plus an optimism bonus for rarely
+                # tried, affordable moves.
+                score += self.memory_effect_weight * (
+                    self.treatment_memory.effect_total(actions)
+                )
+                if self.fiscal_prudence_weight and self._in_deficit():
+                    score += self.fiscal_prudence_weight * (
+                        self.treatment_memory.fiscal_total(actions)
+                    )
+                exploration = self.treatment_memory.explore_total(
+                    actions,
+                    costs=[
+                        self._option_costs.get(
+                            (
+                                action.policy_name,
+                                action.action_type or "",
+                                round(action.delta, 6),
+                            ),
+                            0.0,
+                        )
+                        for action in actions
+                    ],
+                )
+                if self.exploration_countdown:
+                    # Active learning within one life: curiosity is scaled by
+                    # the share of the current term still ahead, so late-term
+                    # decisions exploit what earlier turns measured.
+                    remaining = max(0.0, float(state.election_turns_until))
+                    exploration *= min(1.0, remaining / self._initial_term_length)
+                score += exploration
+            score = self._balance_guard_penalty(actions, forecast, score)
             if (
                 best_actions is None
                 or score > best_score
@@ -1378,11 +1572,164 @@ class TimeSeriesPolicyAgent(BaseAgent):
         if self.last_decision is None:
             raise RuntimeError("forecast agent has no decision after choosing actions")
         self.context = self.context.append_transition(before, actions, self.state)
+        if self.treatment_memory is not None:
+            self._record_treatment_effects(actions)
         observed = self.context.states[-1]
         decision = replace(self.last_decision, observed=observed)
         self.decisions.append(decision)
         self.last_decision = decision
         return self.state
+
+    def _in_deficit(self) -> bool:
+        """Whether the visible budget currently runs a deficit."""
+
+        names = self.feature_encoder.feature_names
+        current = dict(zip(names, self.context.states[-1].row(names)))
+        balance = (
+            float(current.get("finance/total_income", 0.0))
+            - float(current.get("finance/total_expenditure", 0.0))
+        )
+        return balance < -simulator.EPSILON
+
+    def _balance_guard_penalty(
+        self,
+        actions: Sequence[PolicyAction],
+        forecast: StateForecast,
+        score: float,
+    ) -> float:
+        """Penalize candidates that deepen an already-negative forecast balance."""
+
+        if not self.balance_guard_penalty:
+            return score
+        names = self.feature_encoder.feature_names
+        current = dict(
+            zip(names, self.context.states[-1].row(names))
+        )
+        cur_income = float(current.get("finance/total_income", 0.0))
+        cur_exp = float(current.get("finance/total_expenditure", 0.0))
+        cur_balance = cur_income - cur_exp
+        if cur_balance >= 0.0 or abs(cur_balance) < simulator.EPSILON:
+            return score
+        pred_income = float(forecast.first.get("finance/total_income", cur_income))
+        pred_exp = float(forecast.first.get("finance/total_expenditure", cur_exp))
+        worsening = cur_balance - (pred_income - pred_exp)
+        if worsening <= 0.0:
+            return score
+        return score - self.balance_guard_penalty * worsening / abs(cur_balance)
+
+    def _poll_deltas(self) -> list[float]:
+        """Observed per-transition poll deltas, oldest first."""
+
+        states = self.context.states
+        return [
+            current.features[ELECTORAL_SUPPORT_FEATURE]
+            - previous.features[ELECTORAL_SUPPORT_FEATURE]
+            for previous, current in zip(states[:-1], states[1:])
+        ]
+
+    def _record_treatment_effects(self, actions: Sequence[PolicyAction]) -> None:
+        """Feed the just-observed transition into the treatment memory.
+
+        The observed poll delta is de-trended with the median of previous
+        transitions' deltas so repeated actions converge on their treatment
+        effect instead of the game's natural drift.  With
+        ``memory_credit_lag > 0`` each batch also receives a second sample
+        once its multi-turn window closes, which is what lets slowly
+        implemented policies (introductions ramping up over several turns)
+        collect credit their first transition cannot show yet.
+        """
+
+        assert self.treatment_memory is not None
+        states = self.context.states
+        if len(states) < 2:
+            return
+        names = self.feature_encoder.feature_names
+        current_row = dict(zip(names, states[-1].row(names)))
+        previous_row = dict(zip(names, states[-2].row(names)))
+        latest_poll = current_row[ELECTORAL_SUPPORT_FEATURE]
+        previous_poll = previous_row[ELECTORAL_SUPPORT_FEATURE]
+        noop_row = self._noop_forecast_row
+        self._noop_forecast_row = None
+        if noop_row is not None:
+            # The world model's counterfactual: what each metric was expected
+            # to do this transition without any action.
+            drift = float(noop_row.get(ELECTORAL_SUPPORT_FEATURE, previous_poll)) - previous_poll
+            fiscal_drift = (
+                self._normalised_balance_delta(previous_row, noop_row)
+            )
+        else:
+            history = self._poll_deltas()[:-1]
+            drift = self.treatment_memory.drift_estimate(
+                history, window=self.memory_drift_window
+            )
+            fiscal_drift = self.treatment_memory.drift_estimate(
+                self._fiscal_history, window=self.memory_drift_window
+            )
+        observed_delta = latest_poll - previous_poll
+
+        expenditure_ref = max(
+            abs(float(previous_row.get("finance/total_expenditure", 0.0))),
+            simulator.EPSILON,
+        )
+        fiscal_delta = (
+            self._balance(current_row) - self._balance(previous_row)
+        ) / expenditure_ref
+        self._fiscal_history.append(fiscal_delta)
+        del self._fiscal_history[: -self.memory_drift_window]
+        # Age outstanding windows first; a batch pushed below never pays for
+        # the transition it was executed in.
+        for entry in self._pending_credits:
+            entry[0] = float(entry[0]) - 1
+        due = [entry for entry in self._pending_credits if entry[0] <= 0]
+        self._pending_credits = [
+            entry for entry in self._pending_credits if entry[0] > 0
+        ]
+        for entry in due:
+            window_delta = latest_poll - entry[1]
+            self.treatment_memory.record(
+                entry[2],
+                observed_delta=window_delta,
+                drift=drift * self.memory_credit_lag,
+            )
+        if actions and self.memory_credit_lag > 0:
+            self._pending_credits.append(
+                [float(self.memory_credit_lag), latest_poll, tuple(actions)]
+            )
+        self.treatment_memory.record(
+            actions,
+            observed_delta=observed_delta,
+            drift=drift,
+            fiscal_delta=fiscal_delta,
+            fiscal_drift=fiscal_drift,
+        )
+
+    @staticmethod
+    def _balance(row: Mapping[str, float]) -> float:
+        return (
+            float(row.get("finance/total_income", 0.0))
+            - float(row.get("finance/total_expenditure", 0.0))
+        )
+
+    @staticmethod
+    def _normalised_balance_delta(
+        baseline: Mapping[str, float], predicted: Mapping[str, float]
+    ) -> float:
+        """Counterfactual balance change, normalised by expenditure."""
+
+        reference = max(
+            abs(float(baseline.get("finance/total_expenditure", 0.0))),
+            simulator.EPSILON,
+        )
+        return (
+            (
+                float(predicted.get("finance/total_income", 0.0))
+                - float(predicted.get("finance/total_expenditure", 0.0))
+            )
+            - (
+                float(baseline.get("finance/total_income", 0.0))
+                - float(baseline.get("finance/total_expenditure", 0.0))
+            )
+        ) / reference
 
     @property
     def trace(self) -> ForecastTrace:
@@ -1398,6 +1745,7 @@ class TimeSeriesPolicyAgent(BaseAgent):
         self.context = self._initial_context()
         self.decisions.clear()
         self.last_decision = None
+        self._pending_credits = []
 
 
 __all__ = [

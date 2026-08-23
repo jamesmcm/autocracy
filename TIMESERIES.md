@@ -286,3 +286,50 @@ The oracle is `ElectionOracleAgent` with its documented winning defaults
 turn) — it branches the real simulator and wins from turn zero, so it is an
 upper bound rather than a fair player-visible agent. See
 `reports/chronos-2-small-vs-oracle.md` for the latest results.
+
+## Single-life active learning (`autocracy.learning`)
+
+Zero-shot candidate rankings from Chronos are nearly flat (the
+`chronos-2-small-vs-oracle.md` diagnostic measured a predicted poll spread of
+7.5e-5 against true single-move swings of ±6 points), so a purely model-ranked
+campaign is noise. `TreatmentEffectMemory` supplies the missing signal using
+only what the agent itself observes while playing one continuous life:
+
+* every executed transition appends the observed poll change de-trended
+  against the forecaster's **no-op counterfactual** (what the world model
+  expected without any action) to a per-action table; repeats converge on
+  measured treatment effects;
+* an unseen signature inherits shrunk evidence (`family_shrinkage`) from its
+  `(policy, direction)` family, so the next step of a proven slider ranks as
+  promising instead of unknown;
+* a second channel records each action's measured budget-balance effect
+  (expenditure-normalised), which `fiscal_prudence_weight` applies while the
+  visible budget runs a deficit;
+* candidate pools are prioritised by learned effect plus curiosity
+  (uniformly random among never-tried moves), concentrating expensive
+  forecasts on informative candidates;
+* curiosity is scaled by the share of the term still ahead
+  (`exploration_countdown=True`), so early turns explore and late turns
+  exploit before the election.
+
+Leakage rules the design respects: no policy names or hand-picked moves
+anywhere in the strategy path, no scripted warm-ups in the learning
+experiment, fresh empty memory at turn 0, and no cross-episode reuse
+(replaying the same save and carrying learned effects back would be oracle
+look-ahead).
+
+Run it:
+
+```bash
+uv run --extra chronos python experiments/chronos_learning.py \
+  --runs 20 --terms 3 --out reports/chronos_single_life.json
+```
+
+Each run is one life from `uk0.xml`: win the first election, then survive two
+re-elections with the same live campaign. At the shipped defaults, 3 of 20
+lives win the first election (margins +18 to +227) and every winner then
+sweeps both re-elections with growing margins (+592/+677,
++998/+1126, +851/+1192) and final polls of 0.72–0.85 — the online memory
+keeps compounding once past the first-election hump. Lives that hit the
+mid-term DebtCrisis still lose; avoiding that cliff without any fiscal priors
+beyond the deficit rule remains the open gap to the simulator oracle.

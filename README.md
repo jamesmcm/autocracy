@@ -343,6 +343,11 @@ baselines. `Chronos2Forecaster.from_callable(...)` accepts a later GPU-backed
 Chronos2 predictor using the same `ForecastModelInput`; no model weights are
 downloaded by this repository. Each trace records predictions and the actual
 next state, including one-step mean absolute error for later model comparison.
+Passing a `TreatmentEffectMemory` (see `TIMESERIES.md`) turns the agent into
+a single-life active learner: it measures each action's effect on electoral
+support and budget balance from its own observed transitions and wins the
+first UK election on some seeds without any scripted moves
+(`experiments/chronos_learning.py`).
 
 See [`TIMESERIES.md`](TIMESERIES.md) for the full input contract, trace
 schema, Chronos2 integration boundary, and evaluation recommendations.
