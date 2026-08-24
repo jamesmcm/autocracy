@@ -9,3 +9,5 @@ gamedata/saves
 *.pyc
 gamedrive/libd3probe.so
 !autocracy/calibration.json
+
+reports/*.log

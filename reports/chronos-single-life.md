@@ -196,6 +196,34 @@ Mechanically `run_single_life` now records per-term mean polls and crisis
 flags (`term_mean_polls`, `term_crisis`) and continues past losses with
 `--keep-playing`; `--warmup-size N` runs the programmatic diverse warm-up.
 
+Plots: `reports/plots/long_term_recovery_chronos_2_small.png` and
+`long_term_recovery_chronos_2.png` show the per-seed margin arcs for each
+forecaster (o = won term, x = lost); `long_term_small_vs_base.png` compares
+both under thin per-seed lines with a bold cross-seed mean.
+`experiments/plot_long_runs.py` regenerates them from the run JSONs.
+
+### The long-run model comparison flips
+
+On the 10-term keep-playing regime the full chronos-2 base is the better
+learner, the opposite of the 3-term result:
+
+| Forecaster | Term-wins | First-election wins | Reaching ≥ +100 margin |
+| --- | --- | --- | --- |
+| chronos-2-small (28M) | 25/60 | 0/6 | seeds …14, …16 |
+| chronos-2 base (120M) | **34/60** | 0/6 | seeds …13, …14, …16, …920 |
+
+Base's edge concentrates late: its per-term margins stay steadier and keep
+climbing (e.g. seed …920: +247 → +559 → +594 → +734 → +714 → +600 → +668)
+where small's winning arcs spike then collapse (…13: +270 → +653 then −261 →
+−549). This is consistent with base's measurably better *no-op
+counterfactual* (0.034 vs 0.044 one-step MAE): with many accumulated
+transitions the de-trending quality that memory relies on matters more than
+the near-zero candidate-ranking signal that dominates short runs. On the
+3-term evaluation regime base still loses the first-election race
+(1/20 vs 4/20) — it is slower to reach exploitable attribution, then more
+reliable once it has it. Any head-to-head claim must therefore state the
+evaluation regime (terms, keep-playing) it was measured under.
+
 ## Artifacts
 
 * `reports/chronos_single_life.json` — per-life outcomes for the headline run
