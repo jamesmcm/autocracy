@@ -127,6 +127,17 @@ class ProbeAgent(TimeSeriesPolicyAgent):
         chosen_true = _true_one_turn_poll(self, state, chosen)
         chosen_delta = None if chosen_true is None else chosen_true - base
         winners_available = sum(1 for value in actual if value >= 0.03)
+        # Counterfactual quality: the no-op candidate is always present, so
+        # |predicted - true| for that single item measures how well this
+        # forecaster tracks the un-treated world — the baseline every
+        # memory sample is de-trended against.
+        noop_index = next(
+            (i for i, actions in enumerate(candidates) if not actions),
+            None,
+        )
+        noop_error = float("nan")
+        if noop_index is not None and noop_index < len(actual):
+            noop_error = abs(predicted[noop_index] - actual[noop_index])
         rho = spearman(predicted, actual) if len(actual) >= 3 else float("nan")
         spread = (
             max(predicted) - min(predicted) if predicted else float("nan")
@@ -146,6 +157,7 @@ class ProbeAgent(TimeSeriesPolicyAgent):
                 "chosen_rank_pct": rank_pct,
                 "winners_in_pool": float(winners_available),
                 "evaluated": float(len(actual)),
+                "noop_error": noop_error,
             }
         )
         return chosen
