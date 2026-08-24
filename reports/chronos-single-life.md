@@ -196,11 +196,26 @@ Mechanically `run_single_life` now records per-term mean polls and crisis
 flags (`term_mean_polls`, `term_crisis`) and continues past losses with
 `--keep-playing`; `--warmup-size N` runs the programmatic diverse warm-up.
 
-Plots: `reports/plots/long_term_recovery_chronos_2_small.png` and
-`long_term_recovery_chronos_2.png` show the per-seed margin arcs for each
-forecaster (o = won term, x = lost); `long_term_small_vs_base.png` compares
-both under thin per-seed lines with a bold cross-seed mean.
-`experiments/plot_long_runs.py` regenerates them from the run JSONs.
+Plots: the figures below show per-term election margins for the
+10-term keep-playing runs. `experiments/plot_long_runs.py` regenerates
+them from the run JSONs.
+
+![chronos-2-small recovery arcs](plots/long_term_recovery_chronos_2_small.png)
+
+*chronos-2-small: per-seed margin arcs across ten terms; o = won term,
+x = lost term. Recovery arcs (seeds …14, …16) and one stuck seed (…15) are
+clearly separated.*
+
+![chronos-2 base recovery arcs](plots/long_term_recovery_chronos_2.png)
+
+*chronos-2 base: the same plot for the full model — steadier late-term
+margins and fewer deep collapses.*
+
+![small vs base comparison](plots/long_term_small_vs_base.png)
+
+*Small vs base side by side: thin lines are per-seed margins, the bold
+black line the cross-seed mean. Base keeps a higher, more stable mean in
+the second half of the campaign.*
 
 ### The long-run model comparison flips
 
