@@ -47,16 +47,17 @@ from autocracy.timeseries import (
 
 TRACE_DIR = Path("reports/traces")
 
-_SHARED_FORECASTER: Chronos2SmallForecaster | None = None
+_SHARED_FORECASTER: dict[str, Chronos2SmallForecaster] = {}
 
 
-def _shared_forecaster() -> Chronos2SmallForecaster:
-    """Load the pipeline once and reuse it for every independent life."""
+def _shared_forecaster(model_name: str) -> Chronos2SmallForecaster:
+    """Load a pipeline once per model and reuse it for every life."""
 
-    global _SHARED_FORECASTER
-    if _SHARED_FORECASTER is None:
-        _SHARED_FORECASTER = Chronos2SmallForecaster()
-    return _SHARED_FORECASTER
+    if model_name not in _SHARED_FORECASTER:
+        _SHARED_FORECASTER[model_name] = Chronos2SmallForecaster(
+            model_name=model_name
+        )
+    return _SHARED_FORECASTER[model_name]
 
 
 @dataclass(slots=True)
@@ -80,7 +81,7 @@ def build_agent(memory: TreatmentEffectMemory, args, *, seed_offset: int = 0) ->
 
     config = SimulationConfig(random_seed=args.seed + seed_offset)
     return TimeSeriesPolicyAgent(
-        _shared_forecaster(),
+        _shared_forecaster(args.model),
         config=config,
         forecast_horizon=args.horizon,
         candidate_limit=args.candidate_limit,
@@ -153,6 +154,11 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--terms", type=int, default=3)
     parser.add_argument("--horizon", type=int, default=5)
+    parser.add_argument(
+        "--model",
+        default="autogluon/chronos-2-small",
+        help="Forecaster checkpoint; autogluon/chronos-2 is the 120M base.",
+    )
     parser.add_argument("--candidate-limit", type=int, default=32)
     parser.add_argument("--seed", type=int, default=20260813)
     parser.add_argument("--reverse-window", type=int, default=8)
@@ -221,6 +227,7 @@ def main() -> None:
             "runs": args.runs,
             "terms": args.terms,
             "forecast_horizon": args.horizon,
+            "model": args.model,
             "candidate_limit": args.candidate_limit,
             "random_seed": args.seed,
             "exploration_bonus": args.exploration_bonus,

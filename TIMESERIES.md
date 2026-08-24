@@ -335,10 +335,15 @@ mid-term DebtCrisis still lose.
 
 `experiments/diagnose_learning.py` quantifies *why*: probe mode measures
 Spearman ρ between predicted and true per-candidate poll deltas (≈0 for both
-chronos-2-small and the 120M chronos-2 base), while truth mode shows that
-ranking the same candidate pools by their true one-turn effect wins 8/8
+chronos-2-small and the 120M chronos-2 base — and the base also wins less,
+1/20 vs 4/20, when driving the full learning loop), while truth mode shows
+that ranking the same candidate pools by their true one-turn effect wins 8/8
 lives. The strategy is model-limited, not sampling-limited; any future
 forecaster should be admitted by measuring its probe-ρ first. The declared
-£ cost of each slider move rides on every option (`financial_delta`) but a
-deficit-scoring term built on it proved counterproductive — the winning path
-spends heavily and outruns the debt spiral rather than avoiding it.
+£ cost of each slider move rides on every option (`financial_delta`) but
+using it for deficit scoring or exploration ordering proved
+counterproductive — the winning path spends heavily and outruns the debt
+spiral rather than avoiding it. With `--terms 5`, every first-election
+winner survives all five elections with escalating margins, so survival past
+the first boundary is solved; the open gap is reliably winning that first
+vote.

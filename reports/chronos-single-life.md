@@ -126,6 +126,42 @@ Every winner again sweeps both re-elections. For calibration: no-op loses
 at −1116; the simulator oracle wins election 1 at +23…+306 and the truth-
 ranked ceiling wins 8/8 at +321…+726.
 
+## Full chronos-2 base in the learning loop
+
+Running the identical configuration on `autogluon/chronos-2` (120M):
+
+| Forecaster | First-election wins | Margin mean | Best |
+| --- | --- | --- | --- |
+| chronos-2-small (28M) | **4/20** | −597 | +86 |
+| chronos-2 base (120M) | 1/20 | −690 | +256 |
+
+Capacity does not convert into wins here — consistent with the probe-ρ
+measurement above: candidate ranking comes from the measured memory, not
+from either model's zero-shot prior. The base's single win had the largest
+first-election margin observed (+256) but no repeatable advantage.
+
+### Five-term survival
+
+With `--terms 5` (80 turns, five elections) the picture sharpens: on a
+12-life seed slice, 3 lives won election 1 and **every winner then swept all
+four re-elections** — margins +18/+592/+677/+361/+795, +86/+758/+938/+1102/
++1403, +17/+956/+1051/+830/+680 — with final polls 0.68–0.95. Survival past
+the first boundary is a solved problem for this strategy; reliably winning
+the *first* election (~20 % of lives) remains the open gap, bounded by the
+DebtCrisis clock versus discovery speed.
+
+### Process note
+
+An intermediate experiment ordered untried candidates by declared
+affordability ("cheap curiosity first"). It silently contaminated several
+ablation batches before being reverted: like the cost-prior scoring term it
+steers discovery away from expensive-but-popular programmes, which are
+exactly the flywheel winners. Both ideas are documented here as negative
+results — affordability knowledge must not shape *which* moves get probed,
+only (at most) how executed programmes are accounted for afterwards. The
+clean configuration reproduces bit-exactly across runs, so all headline
+numbers above are from uncontaminated code paths.
+
 ## Artifacts
 
 * `reports/chronos_single_life.json` — per-life outcomes for the headline run
