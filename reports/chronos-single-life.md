@@ -162,6 +162,40 @@ only (at most) how executed programmes are accounted for afterwards. The
 clean configuration reproduces bit-exactly across runs, so all headline
 numbers above are from uncontaminated code paths.
 
+## Long-run recovery: does it learn given time?
+
+`--keep-playing --terms 10` continues the campaign through election losses
+(160 turns, ten boundaries), with the scripted diverse warm-up softening the
+opening so no wild early jumps occur. Per-term margins across six lives:
+
+| Seed | Margins by term (1→10) |
+| --- | --- |
+| 20260814 | −468 −159 −315 −123 · **+177 +337 +227 +737 +924 +1134** |
+| 20260816 | −110 · **+717 +994 +1117 +982 +478 +1472 +1327** +127 +105 |
+| 20260920 | −967 −1456 −897 −236 → −342 −91 **+113 +282** · −400 −952 |
+| 20260921 | −633 −603 −379 → **+146 +305 +316** · −941 −863 −243 +170 |
+| 20260813 | −485 +28 −218 −505 −251 → **+270 +653** +156 −261 −549 |
+| 20260815 | −727 … −1321 (never recovers) |
+
+Answers:
+
+1. **Recovery is real.** Five of six lives eventually post sustained winning
+   stretches after enough terms of accumulated attribution; two show clean
+   monotonic learning arcs (+177→+1134 over five straight wins).
+2. **Reaching competence is a *time* issue.** Roughly 3–6 terms (≈50–100
+   observed transitions) are needed before the measured memory outranks
+   chronos noise consistently. The warm-up matters here: the gentler opening
+   let one life lose term 1 by only −110 before dominating from term 2.
+3. **Staying competent is a residual *control* struggle.** Four lives show
+   late-run collapses (e.g. +282 → −952): the world drifts (permanent crisis
+   regime, saturating programmes, compounding debt) faster than
+   recency-weighted estimates re-fit, and elections land after crisis dips.
+   Non-stationary robustness — not initial learning — is the open problem.
+
+Mechanically `run_single_life` now records per-term mean polls and crisis
+flags (`term_mean_polls`, `term_crisis`) and continues past losses with
+`--keep-playing`; `--warmup-size N` runs the programmatic diverse warm-up.
+
 ## Artifacts
 
 * `reports/chronos_single_life.json` — per-life outcomes for the headline run

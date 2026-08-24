@@ -42,6 +42,7 @@ from autocracy.learning import TreatmentEffectMemory
 from autocracy.models import SimulationConfig
 from autocracy.timeseries import (
     ELECTORAL_SUPPORT_FEATURE,
+    ActionRecord,
     TimeSeriesPolicyAgent,
 )
 
@@ -73,6 +74,8 @@ class RunResult:
     actions_taken: int = 0
     interventions_tried: int = 0
     debt_crisis: bool = False
+    term_mean_polls: list[float] = field(default_factory=list)
+    term_crisis: list[bool] = field(default_factory=list)
     wall_clock_seconds: float = 0.0
 
 
@@ -89,6 +92,7 @@ def build_agent(memory: TreatmentEffectMemory, args, *, seed_offset: int = 0) ->
         objective=lambda features: features[ELECTORAL_SUPPORT_FEATURE],
         visible_features_only=True,
         seed_pre_game_history=True,
+        warmup_batch_size=args.warmup_batch_size,
         max_actions_per_turn=args.max_actions_per_turn,
         batch_candidate_limit=args.batch_candidate_limit,
         reverse_window=args.reverse_window,
@@ -114,8 +118,18 @@ def run_single_life(run: int, args) -> tuple[RunResult, TimeSeriesPolicyAgent, T
         family_shrinkage=args.family_shrinkage,
     )
     agent = build_agent(memory, args, seed_offset=run)
+    if args.warmup_size:
+        from autocracy.timeseries import diverse_warmup_plan
+
+        agent.warmup_plan = [
+            ActionRecord.from_action(action)
+            for action in diverse_warmup_plan(
+                agent.state, size=args.warmup_size, capital_share=0.5
+            )
+        ]
     result = RunResult(run=run, seed=args.seed + run)
     polls: list[float] = []
+    term_polls: list[float] = []
     previous_term = agent.state.election_current_term
     total_turns = agent.state.election_turns_until * args.terms
     started = time.monotonic()
@@ -124,6 +138,7 @@ def run_single_life(run: int, args) -> tuple[RunResult, TimeSeriesPolicyAgent, T
         state = simulator.resolve_election_if_ready(agent.state, data=agent.data)
         agent.state = state
         polls.append(float(state.poll_rate))
+        term_polls.append(float(state.poll_rate))
         result.turns_played += 1
         if state.election_current_term > previous_term:
             previous_term = state.election_current_term
@@ -132,12 +147,26 @@ def run_single_life(run: int, args) -> tuple[RunResult, TimeSeriesPolicyAgent, T
                 state.election_player_votes - state.election_opposition_votes
             )
             result.margins.append(margin)
+            result.term_mean_polls.append(
+                sum(term_polls) / len(term_polls) if term_polls else 0.0
+            )
+            term_polls = []
+            result.term_crisis.append("DebtCrisis" in state.active_situations)
             if state.election_result == "loss":
-                result.outcome = f"lost-election-{result.elections_fought}"
-                break
+                # With --keep-playing the campaign continues after a loss so
+                # later terms can show whether the accumulated memory
+                # eventually recovers the vote.
+                if not args.keep_playing:
+                    result.outcome = f"lost-election-{result.elections_fought}"
+                    break
             if result.elections_fought >= args.terms:
-                result.outcome = f"won-{args.terms}-terms"
                 break
+    wins = sum(1 for margin in result.margins if margin > 0)
+    losses = sum(1 for margin in result.margins if margin <= 0)
+    if not result.outcome.startswith("lost-"):
+        result.outcome = (
+            f"{wins}w-{losses}l-over-{result.elections_fought}"
+        )
     result.mean_poll = sum(polls) / len(polls) if polls else 0.0
     result.final_poll = polls[-1] if polls else 0.0
     result.actions_taken = sum(len(d.actions) for d in agent.decisions)
@@ -153,6 +182,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--terms", type=int, default=3)
+    parser.add_argument(
+        "--keep-playing",
+        action="store_true",
+        help="Continue the campaign after election losses so later terms "
+        "show whether accumulated memory eventually recovers the vote.",
+    )
+    parser.add_argument("--warmup-batch-size", type=int, default=2)
+    parser.add_argument(
+        "--warmup-size",
+        type=int,
+        default=0,
+        help="Run a scripted diverse warm-up (cheapest alternating raises/"
+        "lowers, chosen programmatically) before model control; 0 disables.",
+    )
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument(
         "--model",
@@ -228,6 +271,8 @@ def main() -> None:
             "terms": args.terms,
             "forecast_horizon": args.horizon,
             "model": args.model,
+            "keep_playing": args.keep_playing,
+            "warmup_size": args.warmup_size,
             "candidate_limit": args.candidate_limit,
             "random_seed": args.seed,
             "exploration_bonus": args.exploration_bonus,
