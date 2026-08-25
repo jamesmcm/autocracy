@@ -11,3 +11,6 @@ gamedrive/libd3probe.so
 !autocracy/calibration.json
 
 reports/*.log
+
+reports/campaigns/
+reports/*.log
