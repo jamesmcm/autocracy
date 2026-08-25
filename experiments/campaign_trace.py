@@ -65,6 +65,7 @@ def _args_for_chronos(model: str, seed: int) -> argparse.Namespace:
     args.reference_cost = 10.0
     args.decay = 0.9
     args.family_shrinkage = 0.8
+    args.level_keys = False
     args.score_horizon_mean = True
     args.fiscal_prudence_weight = 1.0
     args.fiscal_prior_weight = 0.0
@@ -121,16 +122,30 @@ def _forecaster(model: str):
     return _FORECASTER_CACHE[model]
 
 
-def run_chronos_life(model: str, seed: int, elections: int, out_dir: Path):
+def run_chronos_life(
+    model: str,
+    seed: int,
+    elections: int,
+    out_dir: Path,
+    args: argparse.Namespace | None = None,
+):
     from autocracy.learning import TreatmentEffectMemory
 
+    if args is None:
+        args = _args_for_chronos(model, seed)
+    else:
+        merged = _args_for_chronos(model, seed)
+        merged.decay = args.decay
+        merged.level_keys = args.level_keys
+        args = merged
+
     memory = TreatmentEffectMemory(
-        decay=0.9,
-        exploration_bonus=0.05,
-        reference_cost=10.0,
-        family_shrinkage=0.8,
+        decay=args.decay,
+        exploration_bonus=args.exploration_bonus,
+        reference_cost=args.reference_cost,
+        family_shrinkage=args.family_shrinkage,
+        level_keys=args.level_keys,
     )
-    args = _args_for_chronos(model, seed)
 
     def build(state=None):
         from autocracy.timeseries import ActionRecord, diverse_warmup_plan
@@ -364,6 +379,13 @@ def main() -> None:
     parser.add_argument("--seeds", type=int, default=None)
     parser.add_argument("--elections", type=int, default=20)
     parser.add_argument("--seed-base", type=int, default=20260813)
+    parser.add_argument("--decay", type=float, default=0.9)
+    parser.add_argument(
+        "--level-keys",
+        action="store_true",
+        help="Credit memory samples to the resulting slider level instead "
+        "of the action gesture, so cancels reverse the sampled build-up.",
+    )
     parser.add_argument("--skip-replay", action="store_true")
     parser.add_argument(
         "--repair",
@@ -392,7 +414,9 @@ def main() -> None:
         out_dir = OUT_ROOT / args.mode / str(seed)
         out_dir.mkdir(parents=True, exist_ok=True)
         if args.mode == "chronos":
-            summary = run_chronos_life(args.model, seed, args.elections, out_dir)
+            summary = run_chronos_life(
+                args.model, seed, args.elections, out_dir, args=args
+            )
         else:
             summary = run_oracle_life(seed, args.elections, out_dir)
         ok = None

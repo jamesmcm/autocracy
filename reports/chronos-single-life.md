@@ -278,6 +278,54 @@ pre-turn states via faithful replay (replicating that mutation); all 11
 lives pass 320-turn replay verification after repair, and `_drive` now
 deep-copies snapshots so future runs record correctly.
 
+## Testing the "absolute levels" and "no recency decay" hypotheses
+
+Following the drop-after-election-10 finding (the agent progressively cancels
+its own maxed, popular programmes — approval erodes, opposition sympathy
+climbs 0.13→0.42), three memory-representation changes were implemented and
+measured head-to-head on identical seeds (4 seeds × 6 terms, keep-playing,
+warm-up):
+
+| Configuration | Term-wins | Mean poll (term 5–6) |
+| --- | --- | --- |
+| **shipped baseline (delta keys, decay 0.9)** | **12/24** | 0.53–0.55 |
+| decay = 1.0 (no recency weight) | 7/24 | 0.44–0.42 (declining) |
+| level-keyed memory (credit `(policy, resulting level)`) | 2–5/24 | ≤ 0.41 |
+
+The level-keyed memory *does* learn the thing it was designed to — unit tests
+confirm a cancel then predicts the exact reversal of the sampled build-up
+(`level_effect(policy, 1.0, 0.0) == −Σ arrival samples`). But in the full
+loop it underperforms on every variant tried:
+
+* **Full switch** (scoring = level path only): the agent can no longer
+  exploit unsampled upward steps — each raise to a new level is a fresh
+  unknown — so it never builds the flywheel (polls stuck ≈0.3).
+* **Surgical** (delta scoring primary + level-reversal penalty on decreases):
+  same collapse, softer.
+* A pathology surfaced and was fixed regardless of the representation: the
+  agent *re-cancels already-inactive policies* as a legal no-op, and each
+  repetition bootstrapped positive credit for itself (a 16×-cancel loop).
+  `_effective_change` now excludes effective no-ops from the memory, so no
+  loop can feed itself. This fix is kept.
+
+**No recency decay is a negative result too**: with `decay=1.0` old samples
+from the pre-crisis regime keep full weight and mislead in the drifting
+world — the very erasure that seemed suspicious was protective. Recency
+weighting stays at 0.9.
+
+**The deficit "guard" is load-bearing, not hackiness:** removing the
+measured fiscal-prudence channel (the one hand-shaped term in the stack) on
+the same seeds halves wins (18/60 vs 32/60 at 12 elections) — without it the
+agent overspends and collapses into the crisis worse. The cancelling regime
+it drives is net-helpful survival behaviour, not the cause of the drop.
+
+Conclusion: the drop after election ~10 is a genuine structural limit of the
+debt spiral (exponential interest + permanent crisis regime) that
+memory-representation changes cannot fix. Learning the crisis's full
+consequence within one life would require either long-horizon credit or
+offline experience of many crisis trajectories before the campaign — not a
+reward-shaping term, which is empirically needed but does not cure it.
+
 ## Artifacts
 
 * `reports/chronos_single_life.json` — per-life outcomes for the headline run

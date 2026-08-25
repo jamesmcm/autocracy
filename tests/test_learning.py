@@ -459,6 +459,116 @@ def test_fiscal_prior_uses_declared_cost_before_any_measurement():
     }
 
 
+def test_level_keys_learn_total_contribution_and_reverse_on_cancel():
+    """A cancel to 0 must predict the reversal of the sampled build-up."""
+
+    memory = TreatmentEffectMemory(level_keys=True, decay=1.0)
+    memory.record_level(
+        [_action("PolicyH", 0.5, "introduce")],
+        observed_delta=0.10, drift=0.0,
+        current_levels={"PolicyH": 0.0},
+    )
+    memory.record_level(
+        [_action("PolicyH", 0.5, "raise")],
+        observed_delta=0.04, drift=0.0,
+        current_levels={"PolicyH": 0.5},
+    )
+    # Total contribution of building 0 -> 1.0 = +0.14.
+    assert memory.level_effect("PolicyH", 0.0, 1.0) == pytest.approx(0.14)
+    # Cancelling (1.0 -> 0) reverses it.
+    assert memory.level_effect("PolicyH", 1.0, 0.0) == pytest.approx(-0.14)
+    # A small raise on the sampled path only picks up that level's arrival.
+    assert memory.level_effect("PolicyH", 0.5, 1.0) == pytest.approx(0.04)
+    # Unseen policies/paths contribute nothing.
+    assert memory.level_effect("PolicyH", 0.0, 0.5) == pytest.approx(0.10)
+    assert memory.level_effect("PolicyJ", 0.0, 1.0) == 0.0
+
+
+def test_level_keys_treat_cancel_as_level_zero_for_scoring():
+    """resulting_level maps a cancel to 0 even though the neuron freezes."""
+
+    memory = TreatmentEffectMemory(level_keys=True)
+    cancel = _action("PolicyH", -1.0, "cancel")
+    assert memory.resulting_level(cancel, 0.8) == 0.0
+    raise_action = _action("PolicyH", 0.2, "raise")
+    assert memory.resulting_level(raise_action, 0.6) == pytest.approx(0.8)
+
+
+def test_decay_one_is_a_plain_mean_without_recency_erasure():
+    memory = TreatmentEffectMemory(decay=1.0)
+    memory.record([_action("PolicyA", 0.25, "raise")], observed_delta=0.10)
+    memory.transitions = 200  # very old sample must keep full weight
+    memory.record([_action("PolicyA", 0.25, "raise")], observed_delta=0.02)
+
+    assert memory.estimate(_action("PolicyA", 0.25, "raise")) == pytest.approx(
+        0.06
+    )
+
+
+def test_agent_level_keys_prefer_keep_over_cancel_of_maxed_policy():
+    """With level keys, cancelling a programme the memory built up scores
+    badly, so the agent keeps it."""
+
+    memory = TreatmentEffectMemory(level_keys=True, decay=1.0)
+    policy = _first_available_option(
+        TimeSeriesPolicyAgent(
+            _FlatForecaster(), forecast_horizon=2, candidate_limit=None,
+            random_seed=7, visible_features_only=True,
+        )
+    ).policy_name
+    # The agent built this programme up from 0 to 1.0 with big gains.
+    memory.record_level(
+        [_action(policy, 0.5, "introduce")],
+        observed_delta=0.30, drift=0.0, current_levels={policy: 0.0},
+    )
+    memory.record_level(
+        [_action(policy, 0.5, "raise")],
+        observed_delta=0.15, drift=0.0, current_levels={policy: 0.5},
+    )
+    agent = TimeSeriesPolicyAgent(
+        _FlatForecaster(), forecast_horizon=2, candidate_limit=None,
+        random_seed=7, visible_features_only=True, treatment_memory=memory,
+    )
+    # Force the policy to a maxed level so a cancel is available.
+    state = agent.state
+    state.policies[policy] = 1.0
+    agent.state = state
+
+    cancel_effect = memory.level_effect(policy, 1.0, 0.0)
+    keep_effect = memory.level_effect(policy, 1.0, 1.0)
+
+    assert cancel_effect < -0.4
+    assert keep_effect == 0.0
+
+
+def test_effective_change_detects_noop_recancel():
+    """Re-cancelling an inactive policy is a no-op and must not be credited."""
+
+    memory = TreatmentEffectMemory()
+    agent = TimeSeriesPolicyAgent(
+        _FlatForecaster(),
+        forecast_horizon=2,
+        candidate_limit=None,
+        random_seed=7,
+        visible_features_only=True,
+        treatment_memory=memory,
+    )
+    cancel = _action("PolicyX", -1.0, "cancel")
+    raise_action = _action("PolicyX", 0.25, "raise")
+    # Inactive at a frozen neuron level: a further cancel changes nothing.
+    assert not agent._effective_change(
+        cancel, {"PolicyX": 0.5}, {"PolicyX": False}, memory
+    )
+    # Active: a cancel flips the effective contribution level to zero.
+    assert agent._effective_change(
+        cancel, {"PolicyX": 0.5}, {"PolicyX": True}, memory
+    )
+    # Raising an inactive policy re-activates it, so it is a real change.
+    assert agent._effective_change(
+        raise_action, {"PolicyX": 0.5}, {"PolicyX": False}, memory
+    )
+
+
 def test_exploration_countdown_scales_bonus_by_term_share():
     """Curiosity must fade as the election approaches within one life."""
 

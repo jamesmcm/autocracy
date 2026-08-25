@@ -83,6 +83,19 @@ class TreatmentEffectMemory:
     exploration_bonus: float = 0.0
     reference_cost: float = 10.0
     family_shrinkage: float = 0.8
+    # Level-keyed channels: instead of crediting the *gesture* (raise/cancel
+    # of some delta), credit the *resulting slider level*.  A cancel is then
+    # literally "set the level to 0", so its predicted poll effect reverses
+    # the sampled contributions accumulated on the way up.  Buckets follow
+    # ``level_step``.
+    level_keys: bool = False
+    level_step: float = 0.05
+    level_effects: dict[tuple[str, float], list[_EffectSample]] = field(
+        default_factory=dict
+    )
+    fiscal_level_effects: dict[tuple[str, float], list[_EffectSample]] = field(
+        default_factory=dict
+    )
     effects: dict[tuple[str, str, float], list[_EffectSample]] = field(
         default_factory=dict
     )
@@ -104,6 +117,8 @@ class TreatmentEffectMemory:
             raise ValueError("reference_cost must be positive")
         if not 0.0 <= self.family_shrinkage <= 1.0:
             raise ValueError("family_shrinkage must be in [0, 1]")
+        if self.level_step <= 0.0:
+            raise ValueError("level_step must be positive")
 
     @property
     def known_actions(self) -> int:
@@ -150,6 +165,118 @@ class TreatmentEffectMemory:
     def visits(self, action: PolicyAction | ActionRecord) -> int:
         samples = self.effects.get(action_key(action))
         return len(samples) if samples else 0
+
+    def level_bucket(self, level: float) -> float:
+        """Discretise a slider level onto the fixed bucket grid."""
+
+        return round(float(level) / self.level_step) * self.level_step
+
+    def resulting_level(
+        self, action: PolicyAction | ActionRecord, current: float
+    ) -> float:
+        """The effective slider level an action leaves the policy at.
+
+        A cancellation sets the *contribution* level to zero even though the
+        neuron value freezes: the policy stops contributing immediately.
+        """
+
+        if getattr(action, "action_type", None) == "cancel":
+            return 0.0
+        return max(0.0, min(1.0, float(current) + float(action.delta)))
+
+    def record_level(
+        self,
+        actions: Sequence[PolicyAction | ActionRecord],
+        *,
+        observed_delta: float,
+        drift: float = 0.0,
+        fiscal_delta: float | None = None,
+        fiscal_drift: float = 0.0,
+        current_levels: Mapping[str, float] | None = None,
+    ) -> None:
+        """Credit each action to the slider level it *arrives at*.
+
+        Samples keyed by ``(policy, level bucket)`` are the marginal poll
+        change of moving the slider to that level.  Summing the buckets on
+        any path from ``current`` to ``target`` reconstructs the total
+        contribution of that level range, so a cancel (target 0) reverses
+        everything observed while the slider was built up.
+        """
+
+        if not self.level_keys:
+            return
+        effect = float(observed_delta) - float(drift)
+        if not math.isfinite(effect):
+            return
+        current_levels = current_levels or {}
+        fiscal_effect = None
+        if fiscal_delta is not None:
+            fiscal_effect = float(fiscal_delta) - float(fiscal_drift)
+            if not math.isfinite(fiscal_effect):
+                fiscal_effect = None
+        for action in actions:
+            current = current_levels.get(action.policy_name, 0.0)
+            bucket = self.level_bucket(self.resulting_level(action, current))
+            key = (action.policy_name, bucket)
+            samples = self.level_effects.setdefault(key, [])
+            samples.append(_EffectSample(value=effect, seq=self.transitions))
+            del samples[: len(samples) - self.max_samples]
+            if fiscal_effect is not None:
+                fiscal_samples = self.fiscal_level_effects.setdefault(key, [])
+                fiscal_samples.append(
+                    _EffectSample(value=fiscal_effect, seq=self.transitions)
+                )
+                del fiscal_samples[: len(fiscal_samples) - self.max_samples]
+
+    def level_effect(
+        self, policy_name: str, current: float, target: float
+    ) -> float:
+        """Predicted poll change of moving one slider from ``current`` to
+        ``target``, by summing the sampled arrivals on the crossed path.
+
+        Raises sum the (positive) arrival samples; lowers and cancels reverse
+        them.  Returns 0 when no bucket on the path has been sampled.
+        """
+
+        if not self.level_keys:
+            return 0.0
+        lo, hi = min(float(current), float(target)), max(
+            float(current), float(target)
+        )
+        sign = 1.0 if target >= current else -1.0
+        total = 0.0
+        for (name, bucket), samples in self.level_effects.items():
+            if name != policy_name:
+                continue
+            if lo < bucket <= hi:
+                mean = self._weighted_mean(samples)
+                if mean is not None:
+                    total += mean
+        return sign * total
+
+    def fiscal_level_effect(
+        self, policy_name: str, current: float, target: float
+    ) -> float:
+        """Predicted balance effect of a slider move, level-path summed."""
+
+        if not self.level_keys:
+            return 0.0
+        lo, hi = min(float(current), float(target)), max(
+            float(current), float(target)
+        )
+        sign = 1.0 if target >= current else -1.0
+        total = 0.0
+        for (name, bucket), samples in self.fiscal_level_effects.items():
+            if name != policy_name:
+                continue
+            if lo < bucket <= hi:
+                mean = self._weighted_mean(samples)
+                if mean is not None:
+                    total += mean
+        return sign * total
+
+    def level_visits(self, policy_name: str, target: float) -> int:
+        return len(self.level_effects.get((policy_name, self.level_bucket(target)), []))
 
     def estimate(self, action: PolicyAction | ActionRecord) -> float | None:
         """Return the recency-weighted mean effect, or ``None`` if unseen.
@@ -292,9 +419,13 @@ class TreatmentEffectMemory:
             "exploration_bonus": self.exploration_bonus,
             "reference_cost": self.reference_cost,
             "family_shrinkage": self.family_shrinkage,
+            "level_keys": self.level_keys,
+            "level_step": self.level_step,
             "transitions": self.transitions,
             "effects": serialise(self.effects),
             "fiscal_effects": serialise(self.fiscal_effects),
+            "level_effects": serialise(self.level_effects),
+            "fiscal_level_effects": serialise(self.fiscal_level_effects),
         }
 
     @classmethod
@@ -310,14 +441,33 @@ class TreatmentEffectMemory:
                 ]
             return table
 
+        def deserialise_levels(
+            raw,
+        ) -> dict[tuple[str, float], list[_EffectSample]]:
+            table: dict[tuple[str, float], list[_EffectSample]] = {}
+            for joined, samples in dict(raw or {}).items():
+                parts = str(joined).split("|")
+                key = (parts[0], float(parts[1]))
+                table[key] = [
+                    _EffectSample(value=float(sample["value"]), seq=int(sample["seq"]))
+                    for sample in list(samples)
+                ]
+            return table
+
         memory = cls(
             decay=float(payload.get("decay", 0.9)),
             max_samples=int(payload.get("max_samples", 64)),
             exploration_bonus=float(payload.get("exploration_bonus", 0.0)),
             reference_cost=float(payload.get("reference_cost", 10.0)),
             family_shrinkage=float(payload.get("family_shrinkage", 0.8)),
+            level_keys=bool(payload.get("level_keys", False)),
+            level_step=float(payload.get("level_step", 0.05)),
             effects=deserialise(payload.get("effects")),
             fiscal_effects=deserialise(payload.get("fiscal_effects")),
+            level_effects=deserialise_levels(payload.get("level_effects")),
+            fiscal_level_effects=deserialise_levels(
+                payload.get("fiscal_level_effects")
+            ),
             transitions=int(payload.get("transitions", 0)),
         )
         return memory

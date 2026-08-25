@@ -116,6 +116,7 @@ def run_single_life(run: int, args) -> tuple[RunResult, TimeSeriesPolicyAgent, T
         exploration_bonus=args.exploration_bonus,
         reference_cost=args.reference_cost,
         family_shrinkage=args.family_shrinkage,
+        level_keys=args.level_keys,
     )
     agent = build_agent(memory, args, seed_offset=run)
     if args.warmup_size:
@@ -252,6 +253,12 @@ def main() -> None:
     parser.add_argument("--reference-cost", type=float, default=10.0)
     parser.add_argument("--decay", type=float, default=0.9)
     parser.add_argument(
+        "--level-keys",
+        action="store_true",
+        help="Credit memory samples to the resulting slider level instead "
+        "of the action gesture, so cancels reverse the sampled build-up.",
+    )
+    parser.add_argument(
         "--family-shrinkage",
         type=float,
         default=0.8,
@@ -279,6 +286,7 @@ def main() -> None:
             "reference_cost": args.reference_cost,
             "decay": args.decay,
             "family_shrinkage": args.family_shrinkage,
+            "level_keys": args.level_keys,
             "memory_effect_weight": args.memory_effect_weight,
             "memory_drift_window": args.memory_drift_window,
             "memory_credit_lag": args.memory_credit_lag,

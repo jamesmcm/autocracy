@@ -1285,6 +1285,14 @@ class TimeSeriesPolicyAgent(BaseAgent):
 
         assert self.treatment_memory is not None
         estimate = self.treatment_memory.estimate(option)
+        if self.treatment_memory.level_keys:
+            current = self.state.policies.get(option.policy_name, 0.0)
+            target = self.treatment_memory.resulting_level(option, current)
+            level = self.treatment_memory.level_effect(
+                option.policy_name, current, target
+            )
+            if level != 0.0:
+                estimate = level
         if estimate is None:
             scale = self.treatment_memory.exploration_bonus
             if self._random is not None:
@@ -1534,13 +1542,15 @@ class TimeSeriesPolicyAgent(BaseAgent):
             if self.treatment_memory is not None:
                 # Learned treatment attribution from observed transitions:
                 # de-trended poll effects plus an optimism bonus for rarely
-                # tried, affordable moves.
+                # tried, affordable moves.  With level-keyed memory the
+                # effect is the level-path contribution rather than the
+                # action-gesture delta, so cancels reverse the build-up.
                 score += self.memory_effect_weight * (
-                    self.treatment_memory.effect_total(actions)
+                    self._memory_effect(actions)
                 )
                 if self.fiscal_prudence_weight and self._in_deficit():
                     score += self.fiscal_prudence_weight * (
-                        self.treatment_memory.fiscal_total(actions)
+                        self._memory_fiscal(actions)
                     )
                 exploration = self.treatment_memory.explore_total(
                     actions,
@@ -1600,12 +1610,54 @@ class TimeSeriesPolicyAgent(BaseAgent):
             raise RuntimeError("forecast agent has no decision after choosing actions")
         self.context = self.context.append_transition(before, actions, self.state)
         if self.treatment_memory is not None:
-            self._record_treatment_effects(actions)
+            self._record_treatment_effects(
+                actions, before.policies, before.policy_active
+            )
         observed = self.context.states[-1]
         decision = replace(self.last_decision, observed=observed)
         self.decisions.append(decision)
         self.last_decision = decision
         return self.state
+
+    def _memory_effect(self, actions: Sequence[PolicyAction]) -> float:
+        """Poll score of a candidate batch from the treatment memory.
+
+        Level-keyed mode sums the sampled contribution of the slider-level
+        path each action implies; otherwise the per-gesture delta table is
+        used.
+        """
+
+        assert self.treatment_memory is not None
+        memory = self.treatment_memory
+        if not memory.level_keys:
+            return memory.effect_total(actions)
+        # Surgical mode: keep the per-gesture delta scoring primary and add
+        # the level-path reversal as a penalty on moves that *decrease* a
+        # slider across sampled support levels.  Cancelling a programme the
+        # agent measured building up then costs the full reversal instead of
+        # the marginal first-turn delta.
+        total = memory.effect_total(actions)
+        for action in actions:
+            current = self.state.policies.get(action.policy_name, 0.0)
+            target = memory.resulting_level(action, current)
+            if target < current - simulator.EPSILON:
+                reversal = memory.level_effect(
+                    action.policy_name, current, target
+                )
+                if reversal < 0.0:
+                    total += reversal
+        return total
+
+    def _memory_fiscal(self, actions: Sequence[PolicyAction]) -> float:
+        """Balance score of a candidate batch from the treatment memory."""
+
+        assert self.treatment_memory is not None
+        memory = self.treatment_memory
+        if not memory.level_keys:
+            return memory.fiscal_total(actions)
+        # Keep the delta fiscal scoring; the poll-level reversal penalty
+        # lives in _memory_effect, so fiscal stays symmetric.
+        return memory.fiscal_total(actions)
 
     def _in_deficit(self) -> bool:
         """Whether the visible budget currently runs a deficit."""
@@ -1681,7 +1733,12 @@ class TimeSeriesPolicyAgent(BaseAgent):
             for previous, current in zip(states[:-1], states[1:])
         ]
 
-    def _record_treatment_effects(self, actions: Sequence[PolicyAction]) -> None:
+    def _record_treatment_effects(
+        self,
+        actions: Sequence[PolicyAction],
+        current_levels: Mapping[str, float] | None = None,
+        current_active: Mapping[str, bool] | None = None,
+    ) -> None:
         """Feed the just-observed transition into the treatment memory.
 
         The observed poll delta is de-trended with the median of previous
@@ -1691,9 +1748,21 @@ class TimeSeriesPolicyAgent(BaseAgent):
         once its multi-turn window closes, which is what lets slowly
         implemented policies (introductions ramping up over several turns)
         collect credit their first transition cannot show yet.
+
+        Actions that change nothing (e.g. re-cancelling an already-inactive
+        policy) are excluded so a no-op loop can never bootstrap positive
+        credit for itself.
         """
 
         assert self.treatment_memory is not None
+        current_levels = current_levels or {}
+        current_active = current_active or {}
+        memory = self.treatment_memory
+        meaningful = [
+            action
+            for action in actions
+            if self._effective_change(action, current_levels, current_active, memory)
+        ]
         states = self.context.states
         if len(states) < 2:
             return
@@ -1762,12 +1831,39 @@ class TimeSeriesPolicyAgent(BaseAgent):
                 ]
             )
         self.treatment_memory.record(
-            actions,
+            meaningful,
             observed_delta=observed_delta,
             drift=drift,
             fiscal_delta=fiscal_delta,
             fiscal_drift=fiscal_drift,
         )
+        self.treatment_memory.record_level(
+            meaningful,
+            observed_delta=observed_delta,
+            drift=drift,
+            fiscal_delta=fiscal_delta,
+            fiscal_drift=fiscal_drift,
+            current_levels=current_levels,
+        )
+
+    @staticmethod
+    def _effective_change(
+        action: PolicyAction,
+        levels: Mapping[str, float],
+        active: Mapping[str, bool],
+        memory: "TreatmentEffectMemory",
+    ) -> bool:
+        """Whether executing ``action`` moves the policy's effective level.
+
+        A cancelled policy contributes nothing, so its effective level is 0
+        even while the neuron value freezes; re-cancelling it is a no-op.
+        """
+
+        current = levels.get(action.policy_name, 0.0)
+        is_active = active.get(action.policy_name, current > simulator.EPSILON)
+        effective_current = current if is_active else 0.0
+        target = memory.resulting_level(action, current)
+        return abs(target - effective_current) > simulator.EPSILON
 
     @staticmethod
     def _balance(row: Mapping[str, float]) -> float:
