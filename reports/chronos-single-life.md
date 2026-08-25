@@ -239,6 +239,45 @@ the near-zero candidate-ranking signal that dominates short runs. On the
 reliable once it has it. Any head-to-head claim must therefore state the
 evaluation regime (terms, keep-playing) it was measured under.
 
+## 20-election full traces: chronos-2 base vs the oracle
+
+`experiments/campaign_trace.py` records, for **every turn**, the full
+start-of-turn `SimulationState` plus the executed actions and starting/
+ending political capital, income, expenditure, and poll rate, for 10 seeds
+× 20 elections of chronos-2 (120M) and one oracle run. Each life's trace is
+a `.jsonl.gz` under `reports/campaigns/`, and every life is **replay-verified
+end-to-end** (re-running the recorded actions from the turn-0 state
+reproduces all recorded metrics).
+
+![20-election campaigns: chronos-2 across 10 seeds vs simulator oracle](plots/campaign_20elections_chronos2_vs_oracle.png)
+
+*Thin lines: per-seed chronos-2 margins/polls; bold black: cross-seed mean;
+gold: the simulator oracle (perfect case).*
+
+| Run | First election | Term-wins | Mean term poll |
+| --- | --- | --- | --- |
+| chronos-2 base, 10 seeds | 0/10 (margins −272…−1304) | **106/200 (53%)** | 0.35–0.64 |
+| simulator oracle | **+306** | **20/20** | 0.964 |
+
+The oracle wins the first election and then every re-election by ~unanimous
+margins (≥ 1741, saturating at 2000). Chronos-2 loses the *first* election
+on every seed — attribution has not accumulated yet — but then learns,
+winning over half of all later elections; its best seed wins 18 of 20. The
+first-election wall remains the gap; the plot's separation is exactly that:
+the oracle crosses positive immediately, the learner needs ~2–6 terms to do
+so.
+
+### Trace fidelity note
+
+The original recording aliased `state.policies` (a mutable container
+returned by reference from `state_to_dict`), and the decision-time
+`list_available_actions` side effect (default-level injection for
+uncancellable policies) corrupted every recorded snapshot — actions and
+metrics were unaffected. `campaign_trace.py --repair` rebuilds the true
+pre-turn states via faithful replay (replicating that mutation); all 11
+lives pass 320-turn replay verification after repair, and `_drive` now
+deep-copies snapshots so future runs record correctly.
+
 ## Artifacts
 
 * `reports/chronos_single_life.json` — per-life outcomes for the headline run
