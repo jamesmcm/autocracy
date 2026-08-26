@@ -503,6 +503,29 @@ uv run main.py node Health --country uk
 | `load_state_from_savegame(path, data=None)` | Builds a `SimulationState` seeded from the save (node values, current/desired policy values, runtime fields, and current turn) so the simulator can continue from an in-game snapshot. |
 | `compare_state_to_savegame(state, save, tolerance)` | Produces a `StateComparison` listing value/policy discrepancies and missing entries, making it easy to sanity-check the simulator against the real game. |
 
+### Generated electorates for countries without a save
+
+Only the UK ships a reference save, so every other country (`usa`, `germany`,
+`france`, `canada`, `australia`) previously started with an empty voter list
+and could not run elections. `autocracy/voters.py` synthesises a
+deterministic, statistically plausible electorate from `votertypes.csv` and
+the mission config: membership in each voter type is sampled with that
+type's base percentage, income groups use the same sinusoidal windows as the
+simulator, political groups use the native `ForceVoter` formulas, per-type
+neurons start at the CSV defaults, and an `_All_` base shift places the mean
+approval at a mission-appropriate level. `get_initial_state` installs it
+automatically when no reference save exists, so all six countries are
+playable end-to-end; `generate_country_state(country, n=2000, seed=0)` is
+the public entry point for writing turn-0 saves:
+
+```python
+from autocracy.voters import generate_country_state
+from autocracy import simulator
+
+state = generate_country_state("germany", seed=20260813)
+simulator.save_state(state, "gamedata/saves/germany0.json")
+```
+
 Example:
 
 ```python

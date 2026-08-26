@@ -715,6 +715,13 @@ def get_initial_state(
         state.values[percentage_name] = node.initial_percentage
     state.policy_desired_throttles = state.policies.copy()
     save = _seed_state_from_initial_save(state, data)
+    if save is None:
+        # No reference save for this country: synthesize a deterministic
+        # electorate so elections and the voter model work from turn 0.
+        from .voters import apply_electorate, generate_electorate
+
+        voters, parties = generate_electorate(data, country)
+        apply_electorate(state, data, voters, parties)
     state.effects = _initialize_effect_memory(
         state,
         graph,
