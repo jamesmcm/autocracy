@@ -19,8 +19,9 @@ All paths below are relative to `gamedata/data/`, which mirrors the Democracy 
 | `simulation/policies.csv` | Policy sliders that the player can adjust. | Columns include slider identifier (`slider`), action costs (`introduce`, `cancel`, `raise`, `lower`), department, `mincost`/`maxcost` (and analogous income columns), `cost multiplier` / `incomemultiplier` expressions that now get parsed into live budget modifiers, implementation lag, and `#Effects` columns describing outbound edges toward other nodes. |
 | `simulation/sliders.csv` | Slider metadata. | Declares whether a slider is `DISCRETE` (enum-like) or `PERCENTAGE` (continuous). Discrete labels (`NONE`, `LOW`, `MEDIUM`, …) provide normalized action levels, while the executable still stores the target as a float. Percentage sliders use continuous 0 – 1 values. |
 | `simulation/situations.csv` | Dynamic modifiers (“situations”). | Each row defines trigger thresholds, optional upkeep cost, a list of input effects (how existing nodes/policies influence the latent value), and output effects (how the active situation feeds back into the DAG). Inputs/outputs can also specify inertia so their impact ramps over multiple turns. |
-| `missions/<country>/<country>.txt` | Country-specific configuration. | Sections include `[config]` (currency, demographics), `[options]` (game modifiers), `[stats]` (display text), and `[policies]` (initial slider positions normalized 0 – 1). |
+| `missions/<country>/<country>.txt` | Country-specific configuration. | Sections include `[config]` (currency, demographics), `[options]` (game modifiers that gate option-scoped events and the compulsory-voting election model), `[stats]` (display text), and `[policies]` (initial slider positions normalized 0 – 1). |
 | `missions/<country>/overrides/*.ini` | Graph overrides per country. | Inside `[override]` blocks: remove (`Equation = DELETE`) or inject new edges between hosts and targets, optionally overriding inertia. |
+| `missions/<country>/scripts/*.txt` | Mission-load scripted grudges. | Each file holds `CreateGrudge(...)` calls applied when a country starts without a reference save, mirroring the native `ApplyMissionSpecificData` offsets that a serialized initial save already bakes in. |
 | `data/simconfig.txt` | Global tuning constants. | Political capital accrual, complacency rules, credit rating thresholds, etc. The simulator currently uses the capital-related fields. |
 
 All CSV files are read with `latin-1` encoding to match the original game data. Equations occasionally contain malformed constructs (e.g., `0.0.5` or stray parentheses); the simulator normalizes them before evaluation.
@@ -32,7 +33,7 @@ All CSV files are read with `latin-1` encoding to match the original game data. 
 1. **Nodes**: All entries from `simulation.csv` and `votertypes.csv` become nodes. For voter groups, an extra `<Group>_freq` node represents membership share.
 2. **Policies**: Every policy from `policies.csv` is added as a node of kind `policy`. Their slider identifiers are used to look up slider metadata when validating moves.
 3. **Edges**: Each parsed effect triple (`source`, `target`, `expression`, optional `inertia`) becomes a directed edge. Policy effects are appended after the base DAG to ensure policy nodes influence the same graph.
-4. **Overrides**: Country overrides remove or add edges on top of the shared DAG before a new playthrough begins.
+4. **Overrides**: Country overrides remove or add edges on top of the shared DAG before a new playthrough begins. An override with an equation (`Equation = "0+(0.1*x)"`) **replaces** the shipped effect for the host/target pair rather than appending a second line; `Equation = DELETE` removes the pair. Overrides whose target is a situation are additionally folded into that situation's input list, so the situation latent reflects the rewritten equation (e.g. France's `alcoholabuse.ini` and Germany's `poorearning_generalstrike.ini`).
 
 NetworkX represents the DAG in memory, which makes it easy to walk predecessors for any node when applying updates.
 
@@ -114,7 +115,7 @@ Common behavioural patterns handled correctly:
     - Refresh the manager-owned hidden global neurons (`_global_socialism`, `_global_liberalism`, `_security_`, and `_winning_`) and their outputs before the ordinary neuron list. Active situation outputs are also refreshed from the stored pre-pass situation value before downstream neurons consume them.
     - Walk ordinary simulation nodes in data order. Each node is `default + Σ current incoming effects`, clamped to its declared `[min, max]`; after a node is calculated, its direct outgoing links are recalculated immediately, matching `SIM_Neuron::CalculateValue`.
     - Derive the income-group nodes (`_LowIncome`/`_MiddleIncome`/`_HighIncome`) from the voter population: each of the 2000 loaded voters' value drifts by the change in the policy + economy-node effects on its voter types, and native `SIM_Voter::UpdateIncome` reassigns income groups using the three overlapping sinusoidal windows with the configured 0.5 membership floor. The income node is the graph sum plus a contribution from that income group's voters, and the middle-income node additionally collapses on the middle-class squeeze (Equality below ~0.3). Income-group percentages count the selected native group membership rather than applying a raw `inincome` band cutoff.
-    - Evaluate the nested VoterType income neurons from their direct graph inputs, then evaluate the native VoterType frequency neurons, including persistent frequency grudges, before refreshing the voter manager. The manager's later per-voter income host links are not serialized. Ordinary group percentages use the previous saved `<group>_freq` base for the membership test; the four ideology pairs follow the raw `ForceVoter` weights, and the first income pass retains the captured zero-percentage startup state. Active situation outputs targeting voter types are included in the same current-versus-previous effect delta as policy and ordinary-node links. Then advance the evidence-backed base party step from `SIM_Voter::ConsiderPartyMembership`: approval uses `(value + 1) * 0.5`, sympathy uses the shipped `VOTER_*` thresholds/gains, membership changes use the 0.2/0.7 thresholds and cross-party guard, and serialized party member/activist histories are shifted in the native order. Native manager-owned party lists and activist-count/poll modifiers remain a documented parity boundary.
+    - Evaluate the nested VoterType income neurons from their direct graph inputs, then evaluate the native VoterType frequency neurons, including persistent frequency grudges, before refreshing the voter manager. The manager's later per-voter income host links are not serialized. Ordinary group percentages add the previous saved `<group>_freq` base to the raw group coefficient and test against the manager threshold; the four ideology pairs follow the raw `ForceVoter` weights; income-group percentages count the selected native group membership. Fresh no-order captures confirm this runs identically on the first pass after load. Active situation outputs targeting voter types are included in the same current-versus-previous effect delta as policy and ordinary-node links. Then advance the evidence-backed base party step from `SIM_Voter::ConsiderPartyMembership`: approval uses `(value + 1) * 0.5`, sympathy uses the shipped `VOTER_*` thresholds/gains, membership changes use the 0.2/0.7 thresholds and cross-party guard, and serialized party member/activist histories are shifted in the native order. Native manager-owned party lists and activist-count/poll modifiers remain a documented parity boundary.
     - Recompute situation latent values from their input links and retain the manager’s start/stop decision for the pass. Situation outputs are gated by the active set and participate in the same effect vector.
     - Add the active-minister political-capital accrual and clamp at the
       corresponding `POLITICAL_CAPITAL_MAX_MULTIPLIER` cap.  When the
@@ -181,9 +182,18 @@ memory with every discarded voter population.
      fire when their latent influence sum crosses 0.5 and resolve with a
      seeded option choice. Plots and assassinations require the matching
      extremist pressure group's support to reach the file's `MinStrength`.
+   - Events and dilemmas with a `[prereqs]` section are gated by the mission's
+      `[options]` tokens: `HURRICANES`/`EARTHQUAKES` enable the two
+      natural-disaster events, `FOXES` gates fox-hunting, and `MONARCHY` gates
+      the royal scandal. Attack `[prereqs]` name fired plots and stay
+      attack-scoped. A country with no options therefore never rolls these
+      option-scoped systems.
+   - The mission's `[options]` also gate the election model: Australia's
+      `COMPULSORY_VOTING` forces every eligible voter's turnout probability to
+      one in `forecast_election`/`resolve_election`.
    - The executable keeps unstored random-system state (event cooldowns,
-     group strength), so live-game timing is not reproduced exactly;
-     enabled runs are reproducible through the seed.
+      group strength), so live-game timing is not reproduced exactly;
+      enabled runs are reproducible through the seed.
    - CLI: `uv run main.py simulate --turns 4 --events --dilemmas
      --pressure-groups --assassinations --random-seed 42` (the `agent`
      command accepts the same flags).
@@ -266,13 +276,13 @@ complete offline audit with:
 ```bash
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_term_noorders_chain2_20260810 --turns 24
 
 # The captured-order chain uses the same audit with its pre-turn order files.
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_term_orders_chain_20260810 --turns 24 \
   --orders-dir parity_cases/dem3saves
 ```
@@ -505,18 +515,21 @@ uv run main.py node Health --country uk
 
 ### Generated electorates for countries without a save
 
-Only the UK ships a reference save, so every other country (`usa`, `germany`,
-`france`, `canada`, `australia`) previously started with an empty voter list
-and could not run elections. `autocracy/voters.py` synthesises a
-deterministic, statistically plausible electorate from `votertypes.csv` and
-the mission config: membership in each voter type is sampled with that
-type's base percentage, income groups use the same sinusoidal windows as the
-simulator, political groups use the native `ForceVoter` formulas, per-type
-neurons start at the CSV defaults, and an `_All_` base shift places the mean
-approval at a mission-appropriate level. `get_initial_state` installs it
-automatically when no reference save exists, so all six countries are
-playable end-to-end; `generate_country_state(country, n=2000, seed=0)` is
-the public entry point for writing turn-0 saves:
+The six shipped missions each have a reference initial save
+(`gamedata/saves/<country>0.xml`) that seeds node/policy values, voter and
+party state, grudges, and the scripted mission offsets. For a country without
+such a save, `autocracy/voters.py` synthesises a deterministic, statistically
+plausible electorate from `votertypes.csv` and the mission config: membership
+in each voter type is sampled with that type's base percentage, income groups
+use the same sinusoidal windows as the simulator, political groups use the
+native `ForceVoter` formulas, per-type neurons start at the CSV defaults, and
+an `_All_` base shift places the mean approval at a mission-appropriate level.
+`get_initial_state` installs it automatically when no reference save exists
+and then applies the mission's `scripts/*.txt` `CreateGrudge` calls, so the
+synthesized state carries the same frequency/neuron offsets a serialized save
+would. All six countries are playable end-to-end;
+`generate_country_state(country, n=2000, seed=0)` is the public entry point
+for writing turn-0 saves:
 
 ```python
 from autocracy.voters import generate_country_state

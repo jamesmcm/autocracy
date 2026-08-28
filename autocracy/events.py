@@ -21,8 +21,9 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
+from . import data_loader
 from .models import Grudge, SimulationConfig, SimulationData, SimulationState
 from .simulator import DEFAULT_GAMEDATA, _clamp, evaluate_expression
 
@@ -52,6 +53,7 @@ class EventDefinition:
     description: str
     influences: List[Influence]
     on_implement: List[ScriptAction]
+    prereqs: List[str]
 
 
 @dataclass(slots=True)
@@ -68,6 +70,7 @@ class DilemmaDefinition:
     description: str
     influences: List[Influence]
     options: List[DilemmaOption]
+    prereqs: List[str]
 
 
 @dataclass(slots=True)
@@ -144,10 +147,34 @@ def _parse_influences(section: Optional[Dict[str, str]]) -> List[Influence]:
     return influences
 
 
+def _parse_prereqs(text: str) -> List[str]:
+    """Parse the bare ``[prereqs]`` tokens that gate event/dilemma firing.
+
+    The section lists required mission options such as ``MONARCHY``,
+    ``FOXES``, ``HURRICANES`` or ``EARTHQUAKES``; ``_parse_ini`` skips lines
+    without ``=``, so the tokens are read directly from the raw file text.
+    """
+
+    prereqs: List[str] = []
+    in_section = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_section = line[1:-1].strip().lower() == "prereqs"
+            continue
+        if not in_section or "=" in line:
+            continue
+        prereqs.append(line)
+    return prereqs
+
+
 def _load_events(root: Path) -> Dict[str, EventDefinition]:
     events: Dict[str, EventDefinition] = {}
     for path in sorted((root / "simulation" / "events").glob("*.txt")):
-        sections = _parse_ini(path.read_text(encoding="latin-1"))
+        text = path.read_text(encoding="latin-1")
+        sections = _parse_ini(text)
         config = sections.get("config", {})
         name = config.get("Name") or path.stem
         events[name] = EventDefinition(
@@ -156,6 +183,7 @@ def _load_events(root: Path) -> Dict[str, EventDefinition]:
             description=config.get("Description", ""),
             influences=_parse_influences(sections.get("influences")),
             on_implement=_parse_scripts(config.get("OnImplement", "")),
+            prereqs=_parse_prereqs(text),
         )
     return events
 
@@ -163,7 +191,8 @@ def _load_events(root: Path) -> Dict[str, EventDefinition]:
 def _load_dilemmas(root: Path) -> Dict[str, DilemmaDefinition]:
     dilemmas: Dict[str, DilemmaDefinition] = {}
     for path in sorted((root / "simulation" / "dilemmas").glob("*.txt")):
-        sections = _parse_ini(path.read_text(encoding="latin-1"))
+        text = path.read_text(encoding="latin-1")
+        sections = _parse_ini(text)
         config = sections.get("dilemma", {})
         name = config.get("name") or path.stem
         options: List[DilemmaOption] = []
@@ -184,6 +213,7 @@ def _load_dilemmas(root: Path) -> Dict[str, DilemmaDefinition]:
             description=config.get("description", ""),
             influences=_parse_influences(sections.get("influences")),
             options=options,
+            prereqs=_parse_prereqs(text),
         )
     return dilemmas
 
@@ -191,10 +221,14 @@ def _load_dilemmas(root: Path) -> Dict[str, DilemmaDefinition]:
 def _load_attacks(root: Path) -> Dict[str, AttackDefinition]:
     attacks: Dict[str, AttackDefinition] = {}
     for path in sorted((root / "simulation" / "attacks").glob("*.txt")):
-        sections = _parse_ini(path.read_text(encoding="latin-1"))
+        text = path.read_text(encoding="latin-1")
+        sections = _parse_ini(text)
         config = sections.get("config", {})
         name = config.get("Name") or path.stem
-        prereqs = [line.strip() for line in sections.get("prereqs", {}).values()]
+        # Attack prereqs name the plot that must have fired first (for
+        # example an assassination requires its matching plot); they are bare
+        # tokens, so they use the same raw-section parse as events/dilemmas.
+        prereqs = _parse_prereqs(text)
         attacks[name] = AttackDefinition(
             name=name,
             gui_name=config.get("GUIName", name),
@@ -238,6 +272,55 @@ def _parse_float(value: str) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _country_options(data: SimulationData, country: str) -> set[str]:
+    """Return the mission's enabled ``[options]`` as an uppercase set.
+
+    The Democracy 3 mission files gate option-scoped events and dilemmas
+    through these tokens (``MONARCHY``, ``FOXES``, ``HURRICANES``,
+    ``EARTHQUAKES``).  Events without prereqs fire for every country.
+    """
+
+    setup = data_loader.load_country_setup(data.gamedata_root, country)
+    return {option.strip().upper() for option in setup.options if option.strip()}
+
+
+def _prereqs_satisfied(
+    prereqs: Sequence[str], options: set[str]
+) -> bool:
+    return all(prereq.upper() in options for prereq in prereqs)
+
+
+def _load_country_scripts(root: Path, country: str) -> List[ScriptAction]:
+    """Parse the mission's ``scripts/*.txt`` into ``CreateGrudge`` actions.
+
+    These scripted frequency/neuron offsets are the game's ``CreateGrudge``
+    calls applied at mission load.  They are already baked into a serialized
+    initial save, so ``apply_country_scripts`` only feeds them to states that
+    are synthesized without a reference save.
+    """
+
+    scripts_dir = root / "missions" / country / "scripts"
+    if not scripts_dir.is_dir():
+        return []
+    actions: List[ScriptAction] = []
+    for path in sorted(scripts_dir.glob("*.txt")):
+        actions.extend(_parse_scripts(path.read_text(encoding="latin-1")))
+    return actions
+
+
+def apply_country_scripts(
+    state: SimulationState, data: SimulationData
+) -> SimulationState:
+    """Apply the mission's scripted grudges to a synthesized initial state."""
+
+    actions = _load_country_scripts(data.gamedata_root, state.country)
+    log: List[str] = []
+    for action in actions:
+        if action.name == "CreateGrudge":
+            _apply_grudge(state, action.args, SimulationConfig(), log)
+    return state
 
 
 def _seed_int(seed: int, state: SimulationState, salt: int) -> int:
@@ -372,7 +455,10 @@ def run_events(
 
     rng = random.Random(_seed_int(config.random_seed, state, 0xE9))
     events = _load_events(data.gamedata_root)
+    options = _country_options(data, state.country)
     for event in events.values():
+        if not _prereqs_satisfied(event.prereqs, options):
+            continue
         chance = _event_chance(event, state)
         if chance <= 0.0 or rng.random() >= chance:
             continue
@@ -391,8 +477,11 @@ def run_dilemmas(
 
     rng = random.Random(_seed_int(config.random_seed, state, 0xD1))
     dilemmas = _load_dilemmas(data.gamedata_root)
+    options = _country_options(data, state.country)
     for dilemma in dilemmas.values():
         if not dilemma.options:
+            continue
+        if not _prereqs_satisfied(dilemma.prereqs, options):
             continue
         trigger = 0.0
         context = {**state.values, **state.policies, **state.situations}

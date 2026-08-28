@@ -98,11 +98,12 @@ political capital, total income, total expenditure, and net balance. The
   boundary.
 - VoterType frequency neurons use the native zero-base `[-1, 1]` pass; CSV
   membership percentages are calculated from the native linked lists. Ordinary
-  groups use the previous saved `<group>_freq` value as their membership base,
-  while the four `ForceVoter` ideology links use their raw forced weights;
-  persistent `CreateGrudge(..., <group>_freq, ...)` inputs are restored from
-  saves and included on every pass. The captured turn-zero income percentages
-  retain the game's pre-first-pass startup state.
+  groups add the previous saved `<group>_freq` base to the raw group
+  coefficient, while the four `ForceVoter` ideology links use their raw forced
+  weights; income-group percentages count the selected native membership.
+  Persistent `CreateGrudge(..., <group>_freq, ...)` inputs are restored from
+  saves and included on every pass. Fresh no-order captures confirm the
+  percentages recompute identically on the first pass after load.
 - When available, `get_initial_state` seeds node and policy values from
   `gamedata/saves/<country>0.xml`, matching the shipped baseline.
 - Policy runtime keeps the current neuron value (`<val>`) separate from the
@@ -201,6 +202,13 @@ uv run main.py simulate --turns 4
 uv run main.py simulate --turns 4 --events --dilemmas \
     --pressure-groups --assassinations --random-seed 42
 ```
+
+Events and dilemmas with a `[prereqs]` section only fire for countries whose
+mission enables the matching `[options]` token (for example `HURRICANES` and
+`EARTHQUAKES` gate the two natural-disaster events, `FOXES` gates fox-hunting,
+and `MONARCHY` gates the royal scandal). Countries with no options never see
+these. The Australia mission's `COMPULSORY_VOTING` option forces full turnout
+in the election model.
 
 Programmatic callers pass a `SimulationConfig` to `process_end_of_turn` or
 `BaseAgent`; an all-off config is a bit-for-bit no-op. See `SIMULATION.md`

@@ -15,6 +15,7 @@ import networkx as nx
 from . import data_loader
 from .models import (
     BudgetModifier,
+    CountrySetup,
     Effect,
     EffectHistory,
     ElectionForecast,
@@ -27,6 +28,7 @@ from .models import (
     SimulationConfig,
     SimulationData,
     SimulationState,
+    SituationDefinition,
     SliderDefinition,
     Voter,
 )
@@ -640,6 +642,13 @@ def build_country_graph(country: str, gamedata_root: Optional[str] = None) -> nx
             effect_id=f"override::{host}::{target}::{override_counter}",
         )
         override_counter += 1
+        # A mission override replaces the shipped effect for the host/target
+        # pair instead of adding a second line (Germany's
+        # ``alcoholproductivity.ini`` rewrites ``AlcoholConsumption ->
+        # WorkerProductivity``; the base ``0-(0.17*x)`` term would otherwise
+        # be double-counted against the native value).
+        if graph.has_edge(host, target):
+            graph[host][target]["effects"] = []
         _attach_effect(graph, effect)
     return graph
 
@@ -717,11 +726,15 @@ def get_initial_state(
     save = _seed_state_from_initial_save(state, data)
     if save is None:
         # No reference save for this country: synthesize a deterministic
-        # electorate so elections and the voter model work from turn 0.
+        # electorate so elections and the voter model work from turn 0.  The
+        # mission scripts add the same scripted frequency/neuron grudges the
+        # native game applies at load time.
+        from .events import apply_country_scripts
         from .voters import apply_electorate, generate_electorate
 
         voters, parties = generate_electorate(data, country)
         apply_electorate(state, data, voters, parties)
+        apply_country_scripts(state, data)
     state.effects = _initialize_effect_memory(
         state,
         graph,
@@ -1178,6 +1191,61 @@ def _bind_effect_histories(
     return result, bound
 
 
+def _situation_input_overrides(
+    setup: CountrySetup,
+) -> Dict[str, Dict[str, str]]:
+    """Map each situation target to its mission override equations by host.
+
+    Country overrides such as France's ``alcoholabuse.ini``
+    (``AlcoholConsumption -> Alcoholism``) and Germany's
+    ``poorearning_generalstrike.ini`` (``_LowIncome -> GeneralStrike``) change
+    the equations that feed a situation's latent value.  They are applied to
+    the graph edges in ``build_country_graph``, but situation latents are
+    recomputed from ``SituationDefinition.inputs`` (the ``situations.csv``
+    effects), so the same override must be folded into that input list.
+    """
+
+    overrides: Dict[str, Dict[str, str]] = {}
+    for override in setup.overrides:
+        target = override.get("TargetName")
+        source = override.get("HostName")
+        equation = override.get("Equation")
+        if not target or not source or not equation:
+            continue
+        overrides.setdefault(target, {})[source] = equation
+    return overrides
+
+
+def _effective_situation_inputs(
+    name: str,
+    definition: SituationDefinition,
+    override_map: Mapping[str, Mapping[str, str]],
+) -> List[Effect]:
+    """Return *definition*'s input effects after mission overrides apply."""
+
+    target_overrides = override_map.get(name, {})
+    if not target_overrides:
+        return list(definition.inputs)
+    effective: List[Effect] = []
+    present: set[str] = set()
+    for effect in definition.inputs:
+        if effect.source in target_overrides:
+            equation = target_overrides[effect.source]
+            if equation.upper() == "DELETE":
+                continue
+            effective.append(replace(effect, expression=equation))
+        else:
+            effective.append(effect)
+        present.add(effect.source)
+    for source, equation in target_overrides.items():
+        if source in present or equation.upper() == "DELETE":
+            continue
+        effective.append(
+            Effect(source=source, target=name, expression=equation, inertia=0.0)
+        )
+    return effective
+
+
 def _update_situations(
     state: SimulationState,
     data: SimulationData,
@@ -1187,6 +1255,8 @@ def _update_situations(
 ) -> tuple[Dict[str, float], List[str]]:
     """Recompute latent situation values and determine which remain active."""
 
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    override_map = _situation_input_overrides(setup)
     situation_values: Dict[str, float] = {}
     active: List[str] = []
     for name, definition in data.situations.items():
@@ -1195,7 +1265,7 @@ def _update_situations(
             for prerequisite in definition.prerequisites
         )
         latent = definition.default if prerequisites_met else 0.0
-        for effect in definition.inputs:
+        for effect in _effective_situation_inputs(name, definition, override_map):
             if not effect.source:
                 continue
             if not _effect_is_applicable(state, effect, data):
@@ -1819,47 +1889,34 @@ def _advance_voters_and_income_nodes(
         new_values[node_name] = _clamp(graph_sum + contribution, -1.0, 1.0)
 
     # The voter-type percentages are the population share in each native
-    # linked-list group (the game's CalculatePercentage).  On the first
-    # simulated pass after loading, the links still reflect LoadVoters' raw
-    # ForceVoter calls.  Later passes use the native PreSimulatedNextTurn
-    # criterion: the raw group coefficient plus the VoterType ``freqval``
-    # base must reach the manager threshold.  The pending-list/application
-    # timing is observable in the captured saves: the first pass retains the
-    # loaded membership snapshot, while the next pass reflects the refreshed
-    # frequency bases.
+    # linked-list group (the game's CalculatePercentage).  Income groups count
+    # the selected native membership; the four ForceVoter ideology pairs use
+    # their raw weights against the manager threshold; all other groups add
+    # the VoterType ``freqval`` base to the raw coefficient.  Fresh no-order
+    # captures confirm this runs identically on the first pass after load.
     n_voters = len(state.voters)
     if n_voters:
         for symbol, name in VOTER_SYMBOL_NAMES.items():
             if symbol in INCOME_GROUP_NODES:
-                # The turn-zero UK save is before the first VoterType
-                # percentage pass, so its income percentages are deliberately
-                # still zero even though UpdateIncome has selected a curve.
-                # Preserve that native startup state for the first transition.
-                loaded_percentage = state.voter_percentages.get(
-                    f"{name}_perc", 0.0
-                )
-                if state.turn == 0 and loaded_percentage <= EPSILON:
-                    continue
                 count = sum(
                     1
                     for voter in state.voters
                     if voter.groups.get(symbol, 0.0) > 0.0
                 )
+            elif symbol in POLITICAL_GROUP_SYMBOLS:
+                count = sum(
+                    1
+                    for voter in state.voters
+                    if voter.groups.get(symbol, 0.0) > membership_threshold
+                )
             else:
-                if state.turn == 0 or symbol in POLITICAL_GROUP_SYMBOLS:
-                    count = sum(
-                        1
-                        for voter in state.voters
-                        if voter.groups.get(symbol, 0.0) > membership_threshold
-                    )
-                else:
-                    frequency = membership_frequencies.get(f"{name}_freq", 0.0)
-                    count = sum(
-                        1
-                        for voter in state.voters
-                        if voter.groups.get(symbol, 0.0) + frequency
-                        >= membership_threshold
-                    )
+                frequency = membership_frequencies.get(f"{name}_freq", 0.0)
+                count = sum(
+                    1
+                    for voter in state.voters
+                    if voter.groups.get(symbol, 0.0) + frequency
+                    >= membership_threshold
+                )
             state.voter_percentages[f"{name}_perc"] = count / n_voters
 
 
@@ -2256,6 +2313,8 @@ def _advance_state_values(
     # the native chain.
     situation_values: Dict[str, float] = {}
     situation_context = {**new_values, **state.policies, **state.situations}
+    setup = data_loader.load_country_setup(data.gamedata_root, state.country)
+    override_map = _situation_input_overrides(setup)
     for name, definition in data.situations.items():
         prerequisites_met = all(
             state.policies.get(prerequisite, 0.0) > EPSILON
@@ -2263,7 +2322,7 @@ def _advance_state_values(
         )
         latent = definition.default if prerequisites_met else 0.0
         if prerequisites_met:
-            for effect in definition.inputs:
+            for effect in _effective_situation_inputs(name, definition, override_map):
                 refresh_effect(effect, situation_context)
                 latent += new_effects.get(effect.effect_id or "", 0.0)
         situation_values[name] = _clamp(latent, 0.0, 1.0)
@@ -3542,7 +3601,17 @@ def resolve_election(
     if state.election_turns_until != 0:
         raise ValueError("election is not ready to resolve")
 
-    expectations = _election_voter_expectations(state.voters, state.parties)
+    options = {
+        option.strip().upper()
+        for option in data_loader.load_country_setup(
+            data.gamedata_root, state.country
+        ).options
+        if option.strip()
+    }
+    compulsory_voting = "COMPULSORY_VOTING" in options
+    expectations = _election_voter_expectations(
+        state.voters, state.parties, compulsory_voting=compulsory_voting
+    )
     player_votes, opposition_votes, absent_votes = _rounded_election_counts(
         expectations
     )
@@ -3590,12 +3659,26 @@ def forecast_election(state: SimulationState) -> ElectionForecast:
     draw will equal these fractional counts.
     """
 
-    return _forecast_election_voters(state.voters, state.parties)
+    data = load_simulation_data()
+    options = {
+        option.strip().upper()
+        for option in data_loader.load_country_setup(
+            data.gamedata_root, state.country
+        ).options
+        if option.strip()
+    }
+    return _forecast_election_voters(
+        state.voters,
+        state.parties,
+        compulsory_voting="COMPULSORY_VOTING" in options,
+    )
 
 
 def forecast_election_from_voters(
     voters: Sequence[Voter],
     parties: Mapping[str, PartyState],
+    *,
+    compulsory_voting: bool = False,
 ) -> ElectionForecast:
     """Forecast an election from voter/party records without a full state.
 
@@ -3603,14 +3686,20 @@ def forecast_election_from_voters(
     parsed XML save while its transition state is kept separately.
     """
 
-    return _forecast_election_voters(voters, parties)
+    return _forecast_election_voters(
+        voters, parties, compulsory_voting=compulsory_voting
+    )
 
 
 def _forecast_election_voters(
     voters: Sequence[Voter],
     parties: Mapping[str, PartyState],
+    *,
+    compulsory_voting: bool = False,
 ) -> ElectionForecast:
-    expectations = _election_voter_expectations(voters, parties)
+    expectations = _election_voter_expectations(
+        voters, parties, compulsory_voting=compulsory_voting
+    )
     return ElectionForecast(
         expected_player_votes=_f32(
             sum(player for player, _, _ in expectations)
@@ -3625,6 +3714,8 @@ def _forecast_election_voters(
 def _election_voter_expectations(
     voters: Sequence[Voter],
     parties: Mapping[str, PartyState],
+    *,
+    compulsory_voting: bool = False,
 ) -> list[tuple[float, float, float]]:
     """Return ``(player, opposition, absent)`` expectations per voter."""
 
@@ -3655,6 +3746,7 @@ def _election_voter_expectations(
             approval,
             party_shares,
             party_types,
+            compulsory_voting=compulsory_voting,
         )
         if preference == "player":
             expectations.append((turnout, 0.0, 1.0 - turnout))
@@ -3688,6 +3780,8 @@ def _election_turnout(
     approval: float,
     party_shares: Mapping[str, float],
     party_types: Mapping[str, int],
+    *,
+    compulsory_voting: bool = False,
 ) -> float:
     """Calculate the expected turnout probability from native inputs.
 
@@ -3699,8 +3793,13 @@ def _election_turnout(
     the current party share is the deliberately explicit approximation here.
     Strong serialized sympathy is treated as a live party commitment for
     hand-built states that have not run the membership manager yet.
+
+    With the ``COMPULSORY_VOTING`` mission option (Australia), every eligible
+    voter is required to cast a ballot, so the turnout probability is one.
     """
 
+    if compulsory_voting:
+        return 1.0
     if party is not None:
         return 1.0
     if max(voter.player_sympathy, voter.opposition_sympathy) >= 0.5:
