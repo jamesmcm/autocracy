@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
-import math
 import sys
 import time
 from pathlib import Path
@@ -274,6 +273,22 @@ def run_oracle_life(country: str, seed: int, elections: int, out_dir: Path):
     return _drive(seed, elections, build, out_dir, kind="oracle", data_for=lambda a: a.data)
 
 
+def run_noop_life(country: str, seed: int, elections: int, out_dir: Path):
+    """Drive a country with the passive no-action baseline."""
+
+    from autocracy.agent import PassiveAgent
+
+    agent = PassiveAgent(
+        country=country,
+        config=SimulationConfig(random_seed=seed),
+    )
+
+    def build():
+        return agent
+
+    return _drive(seed, elections, build, out_dir, kind="noop", data_for=lambda a: a.data)
+
+
 def replay_verify(seed, out_dir, elections, kind) -> tuple[bool, int]:
     """Re-run the recorded actions from the turn-0 state; compare metrics.
 
@@ -374,7 +389,12 @@ _STATE_FIELD = {
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("chronos", "oracle"), required=True)
+    parser.add_argument(
+        "--mode",
+        choices=("chronos", "oracle", "noop"),
+        required=True,
+        help="chronos=forecaster, oracle=simulator search, noop=no actions.",
+    )
     parser.add_argument(
         "--model",
         default="autogluon/chronos-2",
@@ -410,7 +430,7 @@ def main() -> None:
             print(f"repaired {life_dir}: {'OK' if ok else 'MISMATCH'} ({n} turns)")
         return
     if args.seeds is None:
-        args.seeds = 1 if args.mode == "oracle" else 10
+        args.seeds = 1 if args.mode in ("oracle", "noop") else 10
 
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     summaries = []
@@ -422,8 +442,10 @@ def main() -> None:
             summary = run_chronos_life(
                 args.country, args.model, seed, args.elections, out_dir, args=args
             )
-        else:
+        elif args.mode == "oracle":
             summary = run_oracle_life(args.country, seed, args.elections, out_dir)
+        else:
+            summary = run_noop_life(args.country, seed, args.elections, out_dir)
         ok = None
         if not args.skip_replay:
             ok, checked = replay_verify(seed, out_dir, args.elections, args.mode)
