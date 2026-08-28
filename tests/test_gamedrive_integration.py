@@ -8,14 +8,12 @@ import sys
 
 import pytest
 
+from gamedrive.paths import game_binary, save_root
 from gamedrive.savecheck import validate_native_save
 
 
-DEFAULT_GAME = Path(
-    "/home/gopostal/.local/share/Steam/steamapps/common/Democracy 3/"
-    "Democracy3.bin.x86_64"
-)
-DEFAULT_SAVE_ROOT = Path("/home/gopostal/.local/share/democracy3/savegames")
+DEFAULT_GAME = game_binary()
+DEFAULT_SAVE_ROOT = save_root()
 
 
 @pytest.mark.integration

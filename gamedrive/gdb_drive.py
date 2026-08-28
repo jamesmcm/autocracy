@@ -10,15 +10,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import time
 from pathlib import Path
 
-GAME = (
-    "/home/gopostal/.local/share/Steam/steamapps/common/Democracy 3/"
-    "Democracy3.bin.x86_64"
-)
+from gamedrive.paths import game_binary
+
+GAME = game_binary()
 HARNESS = Path(__file__).with_name("harness.gdb")
 DISPLAY = ":99"
 

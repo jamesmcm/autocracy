@@ -190,7 +190,7 @@ PYTHONPATH=. uv run python gamedrive/inject_drive.py \
 PYTHONPATH=. uv run python gamedrive/capture.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
   --orders-dir parity_cases/dem3saves \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix d3_probe_replay_run42 --turns 12
 
 # Generate a UK electoral term plus two extra years (24 no-order turns)
@@ -224,13 +224,13 @@ PYTHONPATH=. uv run python gamedrive/term_capture.py \
 # Compare a no-order term capture offline
 PYTHONPATH=. uv run python gamedrive/capture.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml --no-orders \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_term_noorders_run42 --turns 24
 
 # Audit every serialized section of a long no-order chain
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_term_noorders_run42 --turns 24 \
   --minister-resignations
 
@@ -246,7 +246,7 @@ PYTHONPATH=. uv run python gamedrive/inject_drive.py --skip-turn \
 ```
 
 The wrapper reads and writes the installed user's save directory:
-`/home/gopostal/.local/share/democracy3/savegames`. Copy a source capture there
+`~/.local/share/democracy3/savegames`. Copy a source capture there
 under a new name first; do not use an existing save name. It refuses stale
 outputs by default, checks that each native XML has the v1.30.2 sections and a
 single final `</xml>`, and returns nonzero on a timeout or incomplete output.
@@ -337,6 +337,49 @@ expensive.
 
 ## Ground-truth results
 
+### Multi-country no-order capture
+
+On 2026-08-27 the chainable launcher produced three completed native saves
+per country from the shipped `gamedata/saves/<country>0.xml` sources
+(`autocracy_<country>_noorders_20260827_turn{1..3}.xml`). All outputs passed
+native validation and the offline `capture.py` comparison ran with zero
+policy differences at every checkpoint:
+
+| country | turn-1 max node err | turn-3 max node err | note |
+|---|---|---|---|
+| uk | 0.0001 (`GDP`) | 0.0800 (`ForeignRelations`) | event-driven turn-3 |
+| australia | 0.0080 (`Immigration`) | 0.0054 (`Immigration`) | tight |
+| canada | 0.0087 (`GDP`) | 0.0072 (`CurrencyStrength`) | tight |
+| france | 0.0004 (`Tourism`) | 0.0595 (`Unemployment`) | fixed; CrimeRate residual closed |
+| germany | 0.0055 (`GDP`) | 0.0248 (`GDP`) | fixed; WorkerProductivity/GDP collapse closed |
+| usa | 0.0068 (`GDP`) | 0.0434 (`GDP`) | residual expenditure offset |
+
+Australia and Canada match the UK's first-turn envelope. The earlier
+france/germany residuals (CrimeRate +0.20, WorkerProductivity +0.15, GDP
+collapse to 0) came from two country-specific override bugs now fixed: mission
+overrides that rewrite a **situation input** (France's `alcoholabuse.ini`,
+Germany's `poorearning_generalstrike.ini`) were not applied to the situation
+latent computation, and overrides that rewrite an **ordinary graph effect**
+(Germany's `alcoholproductivity.ini`) were added instead of replacing the base
+term. Both now match native: situation latents reflect the overridden input
+equations, and a graph override replaces the shipped effect for the
+host/target pair.
+
+The turn-3 residuals (uk `ForeignRelations`/`_Terrorism`, france
+`Unemployment`, usa `GDP`) are dominated by the native random events that fire
+during a live no-order capture (`LocalBlockbuster`, `CarCompanyShutsPlant`,
+`StressEpidemic`); those stochastic grudges are not reproducible in a
+deterministic replay. Excluding the event-grudge targets, the turn-3 model
+drift is about 0.02-0.025. The remaining usa expenditure offset tracks the
+situation-cost formula and ministerial-scalar rounding in the non-serialized
+native finance manager. To reproduce: run
+`term_capture.py --country <c> --load-name <c>0 --initial-file
+gamedata/saves/<c>0.xml --turns 3 --capture-prefix autocracy_<c>_noorders_<date>`,
+then `capture.py --initial-file gamedata/saves/<c>0.xml --no-orders --turns 3
+--native-dir ~/.local/share/democracy3/savegames --native-prefix <prefix>`.
+
+### First UK parity result
+
 Using `parity_cases/dem3saves/turn0_initial.xml` as input, the native load
 save (`d3_probe_loaded*.xml`) matched the parser's complete extracted snapshot:
 40 ordinary simvalues, 36 situations, voter aggregates, policy/runtime maps,
@@ -410,7 +453,7 @@ PYTHONPATH=. uv run python gamedrive/term_capture.py \
 
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_128turn_noorders_20260810 --turns 128
 ```
 
@@ -449,7 +492,7 @@ PYTHONPATH=. uv run python gamedrive/term_capture.py \
 
 PYTHONPATH=. uv run python gamedrive/term_audit.py \
   --initial-file parity_cases/dem3saves/turn0_initial.xml \
-  --native-dir /home/gopostal/.local/share/democracy3/savegames \
+  --native-dir ~/.local/share/democracy3/savegames \
   --native-prefix autocracy_uk_policy_rollout_fresh_20260810 --turns 24 \
   --orders-dir parity_cases/dem3saves
 ```

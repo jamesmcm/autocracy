@@ -12,11 +12,10 @@ import re
 import subprocess
 from pathlib import Path
 
+from gamedrive.paths import game_binary
 
-DEFAULT_GAME = Path(
-    "/home/gopostal/.local/share/Steam/steamapps/common/Democracy 3/"
-    "Democracy3.bin.x86_64"
-)
+
+DEFAULT_GAME = game_binary()
 
 REQUIRED_SYMBOLS: dict[str, int] = {
     "SIM_GetSimulation()": 0x5AB1A0,

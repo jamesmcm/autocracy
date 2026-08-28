@@ -18,16 +18,14 @@ import time
 from typing import Sequence
 
 from gamedrive.order_plan import build_capture_specs
+from gamedrive.paths import game_binary, native_compat_lib_dir, save_root
 from gamedrive.savecheck import NativeSaveError, validate_native_save
 
 
-GAME = Path(
-    "/home/gopostal/.local/share/Steam/steamapps/common/Democracy 3/"
-    "Democracy3.bin.x86_64"
-)
+GAME = game_binary()
 PROBE = Path(__file__).with_name("libd3probe.so")
 HARNESS = Path(__file__).with_name("harness_inject.gdb")
-SAVE_ROOT = Path("/home/gopostal/.local/share/democracy3/savegames")
+SAVE_ROOT = save_root()
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -269,6 +267,12 @@ def run(
     environment = dict(os.environ)
     environment.pop("DISPLAY", None)
     environment.pop("XAUTHORITY", None)
+    runtime_lib = native_compat_lib_dir()
+    if runtime_lib is not None:
+        existing = environment.get("LD_LIBRARY_PATH")
+        environment["LD_LIBRARY_PATH"] = (
+            f"{runtime_lib}:{existing}" if existing else str(runtime_lib)
+        )
     gdb_args = [
         "gdb",
         "-batch",
