@@ -18,13 +18,14 @@ reconstruct the campaign.
 
 Usage::
 
-    # Chronos-2 (full/base) — 10 seeds, 20 elections each
+    # Chronos-2 (full/base) — 4 seeds, 20 elections each, for a country
     uv run --extra chronos python experiments/campaign_trace.py \
-        --mode chronos --model autogluon/chronos-2 --seeds 10 --elections 20
+        --mode chronos --model autogluon/chronos-2 --country germany \
+        --seeds 4 --elections 20
 
-    # Simulator oracle — the perfect-case reference, one life
+    # Simulator oracle — the perfect-case reference, one life per country
     uv run --extra chronos python experiments/campaign_trace.py \
-        --mode oracle --elections 20
+        --mode oracle --country germany --elections 20
 """
 
 from __future__ import annotations
@@ -123,6 +124,7 @@ def _forecaster(model: str):
 
 
 def run_chronos_life(
+    country: str,
     model: str,
     seed: int,
     elections: int,
@@ -152,6 +154,7 @@ def run_chronos_life(
 
         agent = TimeSeriesPolicyAgent(
             _forecaster(model),
+            country=country,
             config=SimulationConfig(random_seed=seed),
             forecast_horizon=args.horizon,
             candidate_limit=args.candidate_limit,
@@ -193,7 +196,7 @@ def agent_data(agent):
 
 def _drive(seed, elections, build, out_dir, kind, data_for):
     agent = build()
-    data = data_for(agent)
+    data = data_for(agent) or simulator.load_simulation_data()
     turns_path = out_dir / "turns.jsonl.gz"
     with gzip.GzipFile(str(turns_path), "wb", compresslevel=1) as handle:
         summary = {"seed": seed, "kind": kind, "margins": [], "term_mean_polls": [], "term_crisis": []}
@@ -253,13 +256,14 @@ def _drive(seed, elections, build, out_dir, kind, data_for):
     return summary
 
 
-def run_oracle_life(seed: int, elections: int, out_dir: Path):
+def run_oracle_life(country: str, seed: int, elections: int, out_dir: Path):
     from autocracy.agent import ElectionOracleAgent
 
     # PROVEN_ELECTION_SEARCH's candidate sampling needs the documented
     # random_seed; without it the search falls back to deterministic
     # alphabetical truncation and loses election 1.
     agent = ElectionOracleAgent(
+        country=country,
         config=SimulationConfig(random_seed=seed),
         random_seed=seed,
     )
@@ -376,6 +380,7 @@ def main() -> None:
         default="autogluon/chronos-2",
         help="Chronos checkpoint (default the 120M base).",
     )
+    parser.add_argument("--country", default="uk")
     parser.add_argument("--seeds", type=int, default=None)
     parser.add_argument("--elections", type=int, default=20)
     parser.add_argument("--seed-base", type=int, default=20260813)
@@ -391,13 +396,13 @@ def main() -> None:
         "--repair",
         action="store_true",
         help="Do not run campaigns; rewrite every recorded turns.jsonl.gz "
-        "under reports/campaigns/<mode>/ with true pre-turn states via "
-        "faithful replay of the recorded actions.",
+        "under reports/campaigns/<mode>/<country>/ with true pre-turn states "
+        "via faithful replay of the recorded actions.",
     )
     args = parser.parse_args()
 
     if args.repair:
-        root = OUT_ROOT / args.mode
+        root = OUT_ROOT / args.mode / args.country
         if not root.exists():
             raise SystemExit(f"no {args.mode} campaign data to repair")
         for life_dir in sorted(root.iterdir(), key=lambda p: int(p.name)):
@@ -411,19 +416,19 @@ def main() -> None:
     summaries = []
     for index in range(args.seeds):
         seed = args.seed_base + index
-        out_dir = OUT_ROOT / args.mode / str(seed)
+        out_dir = OUT_ROOT / args.mode / args.country / str(seed)
         out_dir.mkdir(parents=True, exist_ok=True)
         if args.mode == "chronos":
             summary = run_chronos_life(
-                args.model, seed, args.elections, out_dir, args=args
+                args.country, args.model, seed, args.elections, out_dir, args=args
             )
         else:
-            summary = run_oracle_life(seed, args.elections, out_dir)
+            summary = run_oracle_life(args.country, seed, args.elections, out_dir)
         ok = None
         if not args.skip_replay:
             ok, checked = replay_verify(seed, out_dir, args.elections, args.mode)
         line = (
-            f"{args.mode} seed {seed}: {len(summary['margins'])} elections, "
+            f"{args.mode} {args.country} seed {seed}: {len(summary['margins'])} elections, "
             f"margin {summary['margins'] if summary['margins'] else '[]'}, "
             f"mean_poll {summary['mean_poll']:.3f} "
             f"({summary['wall_clock_seconds']:.0f}s)"

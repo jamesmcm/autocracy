@@ -13,4 +13,5 @@ gamedrive/libd3probe.so
 reports/*.log
 
 reports/campaigns/
+reports/logs/
 reports/*.log
