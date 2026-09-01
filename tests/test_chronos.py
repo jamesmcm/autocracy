@@ -5,6 +5,7 @@ import pytest
 from autocracy import simulator
 from autocracy.chronos import (
     Chronos2SmallForecaster,
+    _forecasts_from_prediction_frame,
     chronos_frames,
     projected_policy_paths,
 )
@@ -265,3 +266,48 @@ def test_agent_uses_batched_prediction_and_seeded_context():
     assert forecaster.single_calls == agent.decisions[0].candidate_count
     assert agent.context.actions[0] == ()
     assert agent.state.turn == 1
+
+
+def test_forecast_mapping_attaches_quantile_bands():
+    base = simulator.get_initial_state("uk")[0]
+    enc = StateFeatureEncoder.from_visible_state(
+        base,
+        include_finance=False,
+        include_election=False,
+    )
+    context = AutoregressiveContext.from_state(base, encoder=enc)
+    model_input = context.model_input((), horizon=3)
+
+    pandas = pytest.importorskip("pandas")
+    stamps = [pandas.Timestamp("2000-01-02") + pandas.Timedelta(days=i) for i in range(3)]
+    records = []
+    for step, stamp in enumerate(stamps):
+        for name in ("value/GDP",):
+            point = float(base.values["GDP"]) + step
+            records.append(
+                {
+                    "item_id": "candidate-0",
+                    "timestamp": stamp,
+                    "target_name": name,
+                    "predictions": point,
+                    "0.2": point - 1.0,
+                    "0.8": point + 1.5,
+                }
+            )
+    frame = pandas.DataFrame(records)
+
+    forecasts = _forecasts_from_prediction_frame(
+        [model_input], frame, ["value/GDP"], band_quantiles=(0.2, 0.8)
+    )
+    forecast = forecasts[0]
+    assert forecast.lower is not None and forecast.upper is not None
+    assert forecast.band_step("value/GDP", step=0) == pytest.approx(1.25)
+    assert forecast.band_step("value/GDP", step=-1) == pytest.approx(1.25)
+    # Features the pipeline never forecast (treatments) fall back to the
+    # point row, so their band width is zero.
+    assert forecast.band_step("policy/IncomeTax") == 0.0
+
+    # Without band_quantiles the legacy behaviour is unchanged.
+    plain = _forecasts_from_prediction_frame([model_input], frame, ["value/GDP"])
+    assert plain[0].lower is None
+    assert plain[0].band_step("value/GDP") == 0.0

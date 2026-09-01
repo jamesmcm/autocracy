@@ -351,6 +351,37 @@ class TreatmentEffectMemory:
             return 0.0
         return _median([float(value) for value in recent])
 
+    def effect_uncertainty(
+        self, actions: Sequence[PolicyAction | ActionRecord]
+    ) -> float:
+        """Combined recency-weighted std-dev of a batch's learned effects.
+
+        Gates treat this as the epistemic uncertainty of the measured
+        memory channel: poorly sampled actions carry a wide interval and
+        therefore need a bigger raw effect to prove themselves.  Returns
+        0.0 for unseen actions (their uncertainty enters through the
+        exploration bonus instead).
+        """
+
+        uncertainties: list[float] = []
+        for action in actions:
+            samples = self.effects.get(action_key(action))
+            if not samples:
+                continue
+            now = self.transitions
+            weights = [self.decay ** (now - s.seq) for s in samples]
+            total = sum(weights)
+            if total <= 0.0:
+                continue
+            values = [s.value for s in samples]
+            mean = sum(w * v for w, v in zip(weights, values)) / total
+            variance = sum(
+                w * (v - mean) ** 2 for w, v in zip(weights, values)
+            ) / total
+            uncertainties.append(math.sqrt(max(variance, 0.0)))
+        # Independent effects: variances add.
+        return math.sqrt(sum(u * u for u in uncertainties))
+
     def effect_total(
         self, actions: Sequence[PolicyAction | ActionRecord]
     ) -> float:

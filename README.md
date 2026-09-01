@@ -357,6 +357,35 @@ support and budget balance from its own observed transitions and wins the
 first UK election on some seeds without any scripted moves
 (`experiments/chronos_learning.py`).
 
+### Status-quo (no-op) evidence gate
+
+`TimeSeriesPolicyAgent` supports an intervention threshold that favours
+inaction unless there is credible evidence an action helps
+(`intervention_threshold`, `intervention_lambda`, `reversal_cooldown`,
+`action_cost_weight`, `gate_warmup_turns`).  A candidate batch is taken only
+when its *evidence* — the forecast objective plus the measured memory effect,
+excluding exploration bonuses, net of any capital-cost weight — beats the
+no-op candidate's evidence by `intervention_threshold` plus
+`intervention_lambda` times the combined uncertainty (the forecaster's
+poll band when the forecaster supplies quantile bands, e.g.
+`Chronos2SmallForecaster(with_bands=True)`, plus the recency-weighted spread
+of the memory samples).  A policy acted on within the last
+`reversal_cooldown` transitions needs a doubled margin to be touched again.
+When every action fails the margin the agent holds the status quo for the
+turn; `ForecastDecision.evidence_margin` records the cleared margin.
+
+`experiments/campaign_trace.py --mode chronos --conservative` runs this
+preset (delta=0.02, lambda=2.0, 8-transition chill, Chronos-2 q20/q80
+bands on).  On France over 10 electoral terms it wins 10/10 with mean poll
+0.857 and zero DebtCrisis turns, versus 0.788 mean poll, 53 crisis turns and
+~387 actions for the ungated baseline; the no-op baseline scores 0.844.
+The cross-country follow-up (`reports/noop_gate_cross_country.md`) shows the
+profile does **not** generalise: on uk/australia/canada/germany the gate
+agent wins 0 elections (poll barely above no-op) where the ungated agent
+wins 53-88%, because flat Chronos candidate spread never produces evidence
+that clears the threshold once warm-up ends.  The status-quo prior fixes
+over-intervention only where no-op was already strong.
+
 See [`TIMESERIES.md`](TIMESERIES.md) for the full input contract, trace
 schema, Chronos2 integration boundary, and evaluation recommendations.
 

@@ -650,6 +650,12 @@ class StateForecast:
     origin_turn: int
     pending_actions: tuple[ActionRecord, ...] = ()
     model_name: str = ""
+    # Optional per-step lower/upper uncertainty bands keyed by feature name.
+    # Populated only by forecasters that can express calibrated spread (the
+    # Chronos-2 quantile adapter); the no-op evidence gate treats a missing
+    # band as zero uncertainty.
+    lower: tuple[Mapping[str, float], ...] | None = None
+    upper: tuple[Mapping[str, float], ...] | None = None
 
     @classmethod
     def from_rows(
@@ -658,6 +664,8 @@ class StateForecast:
         rows: Sequence[Mapping[str, float]],
         *,
         model_name: str = "",
+        lower: tuple[Mapping[str, float], ...] | None = None,
+        upper: tuple[Mapping[str, float], ...] | None = None,
     ) -> "StateForecast":
         if not rows:
             raise ValueError("a forecaster must return at least one future row")
@@ -674,6 +682,8 @@ class StateForecast:
             origin_turn=model_input.turns[-1],
             pending_actions=model_input.pending_actions,
             model_name=model_name,
+            lower=lower,
+            upper=upper,
         )
 
     @property
@@ -688,6 +698,22 @@ class StateForecast:
     def final(self) -> Mapping[str, float]:
         return self.values[-1]
 
+    def band_step(self, feature: str, step: int = -1) -> float:
+        """Half-width of the uncertainty band for one feature at one step.
+
+        Returns 0.0 when the forecaster supplies no bands for the feature,
+        so consumers never depend on band availability.
+        """
+
+        if self.lower is None or self.upper is None:
+            return 0.0
+        index = step if step >= 0 else len(self.lower) + step
+        if not 0 <= index < len(self.lower):
+            return 0.0
+        lo = float(self.lower[index].get(feature, 0.0))
+        hi = float(self.upper[index].get(feature, 0.0))
+        return max(0.0, (hi - lo) / 2.0)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "feature_names": list(self.feature_names),
@@ -696,7 +722,6 @@ class StateForecast:
             "pending_actions": [
                 action.to_dict() for action in self.pending_actions
             ],
-            "model_name": self.model_name,
         }
 
 
@@ -910,6 +935,9 @@ class ForecastDecision:
     forecast: StateForecast
     score: float
     candidate_count: int
+    # Evidence margin the chosen batch cleared over the no-op baseline
+    # (None for warm-up moves or when the gate is disabled).
+    evidence_margin: float | None = None
     observed: StateSnapshot | None = None
 
     @property
@@ -925,10 +953,9 @@ class ForecastDecision:
     def to_dict(self) -> dict[str, object]:
         return {
             "turn": self.turn,
-            "actions": [action.to_dict() for action in self.actions],
-            "forecast": self.forecast.to_dict(),
-            "score": self.score,
             "candidate_count": self.candidate_count,
+            "evidence_margin": self.evidence_margin,
+            "score": self.score,
             "observed": self.observed.to_dict() if self.observed else None,
             "one_step_mae": self.one_step_mae,
         }
@@ -1078,6 +1105,11 @@ class TimeSeriesPolicyAgent(BaseAgent):
         balance_guard_penalty: float = 0.0,
         fiscal_prudence_weight: float = 0.0,
         fiscal_prior_weight: float = 0.0,
+        intervention_threshold: float = 0.0,
+        intervention_lambda: float = 0.0,
+        reversal_cooldown: int = 0,
+        action_cost_weight: float = 0.0,
+        gate_warmup_turns: int = 0,
     ) -> None:
         super().__init__(
             country=country,
@@ -1164,9 +1196,29 @@ class TimeSeriesPolicyAgent(BaseAgent):
         # directly (normalised by expenditure) — no measurement needed.
         self.fiscal_prior_weight = float(fiscal_prior_weight)
         self._option_financials: dict[tuple[str, str, float], float] = {}
-        # Actions awaiting their multi-turn effect window: [remaining
-        # transitions, poll at execution time, actions, cumulative balance
-        # at execution time].
+        # Status-quo prior (NEXT_STEPS experiment 1): an action is only
+        # taken when its evidence — objective score plus measured memory
+        # effect, excluding optimism/exploration bonuses — beats the no-op
+        # candidate by an explicit margin.  ``intervention_threshold`` is
+        # the fixed margin δ; ``intervention_lambda`` scales the combined
+        # forecast-band + memory uncertainty, so noisy candidates must clear
+        # a higher bar (LCB(a) > UCB(noop) + δ).
+        self.intervention_threshold = float(intervention_threshold)
+        self.intervention_lambda = float(intervention_lambda)
+        # Post-intervention chill: an action on a policy blocks any further
+        # action on the same policy for this many transitions, unless the
+        # candidate clears the gate margin by double the threshold (an
+        # emergency escape hatch so a genuinely catastrophic move can still
+        # be undone).
+        self.reversal_cooldown = int(reversal_cooldown)
+        # Per-transition opportunity cost of spending political capital:
+        # every candidate batch pays this times its total option cost.
+        self.action_cost_weight = float(action_cost_weight)
+        # Turns at the start of the campaign where the gate is bypassed
+        # (used to force the warm-up program through; the model-driven
+        # choice honours the gate from this turn on).
+        self.gate_warmup_turns = int(gate_warmup_turns)
+        self._noop_decision: tuple[float, "StateForecast | None"] | None = None
         self._pending_credits: list[list[object]] = []
         # First-step feature row the forecaster predicted for this turn's
         # no-op candidate; the recorder uses it as the counterfactual.
@@ -1455,6 +1507,101 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     return score - self.reverse_penalty
         return score
 
+    def _composite_evidence(
+        self,
+        actions: Sequence[PolicyAction],
+        forecast: StateForecast,
+        state: SimulationState,
+    ) -> float:
+        """Evidence score of a candidate: what the world model and the
+        measured treatment memory jointly say, before any optimism bonus.
+
+        Forecast objective (horizon-mean or final-step, as configured) plus
+        the memory effect weighted like the legacy scorer, minus an
+        opportunity cost per unit of political capital spent, minus the
+        debt-growth penalty.  A no-op passes through with the raw objective
+        so the gate compares like with like.
+        """
+
+        if self.score_horizon_mean:
+            score = sum(
+                float(self.objective(row)) for row in forecast.values
+            ) / max(len(forecast.values), 1)
+        else:
+            score = float(self.objective(forecast.final))
+        if self.debt_growth_penalty:
+            feature_names = self.feature_encoder.feature_names
+            baseline = dict(
+                zip(
+                    feature_names,
+                    self.context.states[-1].row(feature_names),
+                )
+            )
+            score -= self.debt_growth_penalty * max(
+                0.0,
+                forecast_debt_gdp_growth(forecast, baseline),
+            )
+        if not actions:
+            return score
+        if self.treatment_memory is not None:
+            score += self.memory_effect_weight * self._memory_effect(actions)
+            if self.fiscal_prudence_weight and self._in_deficit():
+                score += self.fiscal_prudence_weight * self._memory_fiscal(actions)
+        if self.fiscal_prior_weight and self._in_deficit():
+            score += self.fiscal_prior_weight * (
+                self._known_fiscal_delta(actions) / self._expenditure_reference()
+            )
+        if self.action_cost_weight:
+            spent = sum(
+                self._option_costs.get(
+                    (
+                        action.policy_name,
+                        action.action_type or "",
+                        round(action.delta, 6),
+                    ),
+                    0.0,
+                )
+                for action in actions
+            )
+            score -= self.action_cost_weight * spent
+        return score
+
+    def _forecast_poll_band(self, forecast: StateForecast) -> float:
+        """Forecast-band uncertainty of the headline poll target."""
+
+        band = forecast.band_step(ELECTORAL_SUPPORT_FEATURE, step=-1)
+        return band if math.isfinite(band) else 0.0
+
+    def _cooldown_blocks(self, actions, state: SimulationState) -> bool:
+        """Whether any action touches a policy still in its chill window.
+
+        The window counts transitions since the last executed action on the
+        same policy.  A no-op is never blocked.
+        """
+
+        if not self.reversal_cooldown:
+            return False
+        touched = {action.policy_name for action in actions}
+        for age, transition in enumerate(reversed(self.context.actions)):
+            for record in transition:
+                if record.policy_name in touched:
+                    if age < self.reversal_cooldown:
+                        return True
+                    touched.discard(record.policy_name)
+                    if not touched:
+                        return False
+        return False
+
+    def _gate_scale(self) -> float:
+        """Fallback chill margin when the threshold is zero."""
+
+        names = self.feature_encoder.feature_names
+        row = dict(zip(names, self.context.states[-1].row(names)))
+        return max(
+            0.02,
+            0.05 * float(row.get(ELECTORAL_SUPPORT_FEATURE, 0.0)),
+        )
+
     def choose_actions(self, state: SimulationState, options) -> tuple[PolicyAction, ...]:
         if state.turn != self.context.current_turn:
             self.context = self._initial_context()
@@ -1478,6 +1625,7 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     forecast=forecast,
                     score=score,
                     candidate_count=1,
+                    evidence_margin=None,
                 )
                 return scheduled
             # Nothing legal remains; fall through to model-driven choice.
@@ -1501,6 +1649,19 @@ class TimeSeriesPolicyAgent(BaseAgent):
         # Retained for diagnostics: per-candidate predictions of this turn.
         self._last_candidates = list(candidates)
         self._last_forecasts = list(forecasts)
+        # Status-quo gate baseline: the no-op candidate's composite evidence
+        # score (objective only — no memory effect, no bonuses).
+        noop_index = candidates.index(()) if () in candidates else None
+        noop_score = (
+            self._composite_evidence((), forecasts[noop_index], state)
+            if noop_index is not None
+            else None
+        )
+        noop_uncertainty = (
+            self._forecast_poll_band(forecasts[noop_index])
+            if noop_index is not None
+            else 0.0
+        )
         best_actions: tuple[PolicyAction, ...] | None = None
         best_forecast: StateForecast | None = None
         best_score = -math.inf
@@ -1509,12 +1670,10 @@ class TimeSeriesPolicyAgent(BaseAgent):
             if self.reverse_window and self.reverse_penalty
             else ()
         )
-        feature_names = self.feature_encoder.feature_names
-        fiscal_baseline = dict(
-            zip(
-                feature_names,
-                self.context.states[-1].row(feature_names),
-            )
+        gate_active = (
+            noop_score is not None
+            and (self.intervention_threshold or self.intervention_lambda)
+            and state.turn >= self.gate_warmup_turns
         )
         for actions, forecast in zip(candidates, forecasts):
             if forecast.horizon < self.forecast_horizon:
@@ -1522,36 +1681,12 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     f"forecaster returned {forecast.horizon} steps, "
                     f"expected {self.forecast_horizon}"
                 )
-            if self.score_horizon_mean:
-                score = sum(
-                    float(self.objective(row)) for row in forecast.values
-                ) / max(len(forecast.values), 1)
-            else:
-                score = float(self.objective(forecast.final))
-            if not math.isfinite(score):
-                raise ValueError(f"forecast objective returned a non-finite score: {score!r}")
-            if self.debt_growth_penalty:
-                # The forecaster predicts the visible fiscal lines (debt,
-                # GDP, income, expenditure) for every horizon step; make a
-                # rising predicted debt-to-GDP ratio cost score.
-                score -= self.debt_growth_penalty * max(
-                    0.0,
-                    forecast_debt_gdp_growth(forecast, fiscal_baseline),
-                )
-            score = self._reverse_adjusted_score(actions, score, recent)
-            if self.treatment_memory is not None:
-                # Learned treatment attribution from observed transitions:
-                # de-trended poll effects plus an optimism bonus for rarely
-                # tried, affordable moves.  With level-keyed memory the
-                # effect is the level-path contribution rather than the
-                # action-gesture delta, so cancels reverse the build-up.
-                score += self.memory_effect_weight * (
-                    self._memory_effect(actions)
-                )
-                if self.fiscal_prudence_weight and self._in_deficit():
-                    score += self.fiscal_prudence_weight * (
-                        self._memory_fiscal(actions)
-                    )
+            evidence = self._composite_evidence(actions, forecast, state)
+            # Full selection score: evidence plus optimism (exploration), so
+            # untried moves can win among gated-in candidates but curiosity
+            # can never manufacture evidence for crossing the gate.
+            score = evidence
+            if self.treatment_memory is not None and actions:
                 exploration = self.treatment_memory.explore_total(
                     actions,
                     costs=[
@@ -1567,18 +1702,34 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     ],
                 )
                 if self.exploration_countdown:
-                    # Active learning within one life: curiosity is scaled by
-                    # the share of the current term still ahead, so late-term
-                    # decisions exploit what earlier turns measured.
                     remaining = max(0.0, float(state.election_turns_until))
                     exploration *= min(1.0, remaining / self._initial_term_length)
                 score += exploration
-            if self.fiscal_prior_weight and self._in_deficit():
-                score += self.fiscal_prior_weight * (
-                    self._known_fiscal_delta(actions)
-                    / self._expenditure_reference()
+            score = self._reverse_adjusted_score(actions, score, recent)
+            # Status-quo gate: the evidence — forecast objective plus
+            # measured memory effect, net of the action's capital cost —
+            # must beat the no-op by δ plus an uncertainty-aware margin
+            # (LCB(a) > UCB(noop) + δ).  Exploration bonuses are excluded
+            # from evidence so curiosity cannot masquerade as proof.
+            if gate_active and actions:
+                memory_uncertainty = (
+                    self.treatment_memory.effect_uncertainty(actions)
+                    if self.treatment_memory is not None
+                    else 0.0
                 )
-            score = self._balance_guard_penalty(actions, forecast, score)
+                margin = self.intervention_threshold + self.intervention_lambda * (
+                    self._forecast_poll_band(forecast)
+                    + noop_uncertainty
+                    + self.memory_effect_weight * memory_uncertainty
+                )
+                if self._cooldown_blocks(actions, state):
+                    # Post-intervention chill: only a double-margin
+                    # emergency justifies touching the policy again.
+                    margin += self.intervention_threshold or self._gate_scale()
+                if not evidence - noop_score > margin:
+                    continue
+            if not math.isfinite(score):
+                raise ValueError(f"forecast objective returned a non-finite score: {score!r}")
             if (
                 best_actions is None
                 or score > best_score
@@ -1591,13 +1742,27 @@ class TimeSeriesPolicyAgent(BaseAgent):
                 best_forecast = forecast
                 best_score = score
         if best_actions is None or best_forecast is None:
-            raise RuntimeError("forecast agent produced no candidate action")
+            if gate_active:
+                # Every action candidate failed the margin: keep the
+                # status quo this turn.
+                best_actions, best_forecast, best_score = (
+                    (),
+                    forecasts[noop_index],
+                    noop_score,
+                )
+            else:
+                raise RuntimeError("forecast agent produced no candidate action")
         self.last_decision = ForecastDecision(
             turn=state.turn,
             actions=_records(best_actions),
             forecast=best_forecast,
             score=best_score,
             candidate_count=len(candidates),
+            evidence_margin=(
+                best_score - noop_score
+                if gate_active and noop_score is not None
+                else None
+            ),
         )
         return best_actions
 

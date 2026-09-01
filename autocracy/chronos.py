@@ -24,6 +24,9 @@ from .timeseries import (
 
 DEFAULT_CHRONOS2_SMALL_MODEL = "autogluon/chronos-2-small"
 DEFAULT_QUANTILE_LEVEL = 0.5
+# Quantile levels used for the uncertainty bands the no-op evidence gate
+# consumes.  The pair brackets the 60% central interval.
+BAND_QUANTILES: tuple[float, float] = (0.2, 0.8)
 _TIMESTAMP_ORIGIN = "2000-01-01"
 
 
@@ -143,6 +146,9 @@ class Chronos2SmallForecaster:
     device_map: str | None = None
     torch_dtype: str = "float32"
     quantile_level: float = DEFAULT_QUANTILE_LEVEL
+    # When True, predict at BAND_QUANTILES as well and attach lower/upper
+    # bands to every returned StateForecast (uncertainty-aware gating).
+    with_bands: bool = False
     batch_size: int = 256
     max_context_rows: int | None = None
     pipeline_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -188,11 +194,14 @@ class Chronos2SmallForecaster:
                 self.max_context_rows
             )
         pipeline = self._ensure_pipeline()
+        quantile_levels = [self.quantile_level]
+        if self.with_bands:
+            quantile_levels.extend(q for q in BAND_QUANTILES if q != self.quantile_level)
         prediction_frame = pipeline.predict_df(
             context_frame,
             future_df=future_frame,
             prediction_length=inputs[0].horizon,
-            quantile_levels=[self.quantile_level],
+            quantile_levels=quantile_levels,
             id_column="item_id",
             timestamp_column="timestamp",
             target=list(target_names),
@@ -200,7 +209,10 @@ class Chronos2SmallForecaster:
             batch_size=self.batch_size,
         )
         return _forecasts_from_prediction_frame(
-            inputs, prediction_frame, target_names
+            inputs,
+            prediction_frame,
+            target_names,
+            band_quantiles=BAND_QUANTILES if self.with_bands else None,
         )
 
 
@@ -208,8 +220,14 @@ def _forecasts_from_prediction_frame(
     inputs: Sequence[ForecastModelInput],
     prediction_frame: Any,
     target_names: Sequence[str],
+    band_quantiles: tuple[float, float] | None = None,
 ) -> list[StateForecast]:
-    """Map the long prediction frame back into per-candidate forecasts."""
+    """Map the long prediction frame back into per-candidate forecasts.
+
+    With ``band_quantiles`` the frame is additionally pivoted into per-step
+    lower/upper band rows for every target, attached to each forecast so
+    uncertainty-aware consumers can read forecast spread.
+    """
 
     if "predictions" not in prediction_frame.columns:
         raise RuntimeError(
@@ -221,20 +239,34 @@ def _forecasts_from_prediction_frame(
         inputs[0].horizon if inputs else 0
     )
     grouped: dict[str, dict[tuple[str, int], float]] = {}
+    banded: dict[str, dict[tuple[str, int, str], float]] = {}
+    band_columns: dict[float, str] = {}
+    if band_quantiles is not None:
+        for quantile in band_quantiles:
+            column = str(quantile)
+            if column in prediction_frame.columns:
+                band_columns[quantile] = column
+    use_bands = band_quantiles is not None and len(band_columns) == 2
     for row in prediction_frame.to_dict("records"):
         key = (str(row["target_name"]), step_index[row["timestamp"]])
-        grouped.setdefault(str(row["item_id"]), {})[key] = float(
-            row["predictions"]
-        )
+        item = str(row["item_id"])
+        grouped.setdefault(item, {})[key] = float(row["predictions"])
+        if use_bands:
+            for quantile, column in band_columns.items():
+                side = "lower" if quantile == min(band_columns) else "upper"
+                banded.setdefault(item, {})[key + (side,)] = float(row[column])
     forecasts: list[StateForecast] = []
     for index, model_input in enumerate(inputs):
-        item_grouped = grouped.get(f"candidate-{index}")
+        item_id = f"candidate-{index}"
+        item_grouped = grouped.get(item_id)
         if item_grouped is None or len(item_grouped) != expected_points:
             raise RuntimeError(
-                f"chronos prediction frame is incomplete for candidate-{index}"
+                f"chronos prediction frame is incomplete for {item_id}"
             )
         known_paths = projected_policy_paths(model_input)
         rows: list[dict[str, float]] = []
+        lower_rows: list[dict[str, float]] = []
+        upper_rows: list[dict[str, float]] = []
         for step in range(model_input.horizon):
             row = {
                 name: item_grouped[(name, step)]
@@ -246,15 +278,34 @@ def _forecasts_from_prediction_frame(
             for name, value in known_paths[step].items():
                 row.setdefault(name, value)
             rows.append(row)
+            if use_bands:
+                item_banded = banded.get(item_id, {})
+                lower_rows.append(
+                    {
+                        name: item_banded.get((name, step, "lower"), row.get(name, 0.0))
+                        for name in model_input.feature_names
+                    }
+                )
+                upper_rows.append(
+                    {
+                        name: item_banded.get((name, step, "upper"), row.get(name, 0.0))
+                        for name in model_input.feature_names
+                    }
+                )
         forecasts.append(
             StateForecast.from_rows(
-                model_input, rows, model_name="chronos-2-small"
+                model_input,
+                rows,
+                model_name="chronos-2-small",
+                lower=tuple(lower_rows) if use_bands else None,
+                upper=tuple(upper_rows) if use_bands else None,
             )
         )
     return forecasts
 
 
 __all__ = [
+    "BAND_QUANTILES",
     "Chronos2SmallForecaster",
     "DEFAULT_CHRONOS2_SMALL_MODEL",
     "chronos_frames",

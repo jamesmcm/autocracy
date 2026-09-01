@@ -72,6 +72,34 @@ def _args_for_chronos(model: str, seed: int) -> argparse.Namespace:
     args.balance_guard_penalty = 0.0
     args.warmup_size = 8
     args.warmup_batch_size = 2
+    args.intervention_threshold = 0.0
+    args.intervention_lambda = 0.0
+    args.reversal_cooldown = 0
+    args.action_cost_weight = 0.0
+    args.gate_warmup_turns = 0
+    return args
+
+
+def _args_for_conservative_chronos(model: str, seed: int) -> argparse.Namespace:
+    """Chronos baseline preset plus the status-quo (no-op) evidence gate.
+
+    NEXT_STEPS experiment 1: favour inaction unless an action's evidence —
+    forecast objective plus measured memory effect, excluding exploration
+    bonuses — beats the no-op by delta plus an uncertainty-aware margin.
+    The uncertainty uses the Chronos-2 q20/q80 band (forecaster built with
+    ``with_bands=True``) and the recency-weighted spread of the memory
+    samples.  Post-intervention chill: a policy touched in the last
+    ``reversal_cooldown`` transitions needs a double margin to act on
+    again.  Warm-up stays (the model needs interventional context) but the
+    gate activates right after it.
+    """
+
+    args = _args_for_chronos(model, seed)
+    args.intervention_threshold = 0.02
+    args.intervention_lambda = 2.0
+    args.reversal_cooldown = 8
+    args.action_cost_weight = 0.0
+    args.gate_warmup_turns = 0
     return args
 
 
@@ -111,15 +139,18 @@ def _record_turn(
     record["poll_end"] = float(agent.state.poll_rate)
 
 
-_FORECASTER_CACHE: dict[str, object] = {}
+_FORECASTER_CACHE: dict[tuple[str, bool], object] = {}
 
 
-def _forecaster(model: str):
-    if model not in _FORECASTER_CACHE:
+def _forecaster(model: str, with_bands: bool = False):
+    key = (model, with_bands)
+    if key not in _FORECASTER_CACHE:
         from autocracy.chronos import Chronos2SmallForecaster
 
-        _FORECASTER_CACHE[model] = Chronos2SmallForecaster(model_name=model)
-    return _FORECASTER_CACHE[model]
+        _FORECASTER_CACHE[key] = Chronos2SmallForecaster(
+            model_name=model, with_bands=with_bands
+        )
+    return _FORECASTER_CACHE[key]
 
 
 def run_chronos_life(
@@ -129,13 +160,22 @@ def run_chronos_life(
     elections: int,
     out_dir: Path,
     args: argparse.Namespace | None = None,
+    *,
+    conservative: bool = False,
 ):
     from autocracy.learning import TreatmentEffectMemory
 
     if args is None:
-        args = _args_for_chronos(model, seed)
+        args = (
+            _args_for_conservative_chronos(model, seed)
+            if conservative
+            else _args_for_chronos(model, seed)
+        )
     else:
-        merged = _args_for_chronos(model, seed)
+        builder = (
+            _args_for_conservative_chronos if conservative else _args_for_chronos
+        )
+        merged = builder(model, seed)
         merged.decay = args.decay
         merged.level_keys = args.level_keys
         args = merged
@@ -145,14 +185,13 @@ def run_chronos_life(
         exploration_bonus=args.exploration_bonus,
         reference_cost=args.reference_cost,
         family_shrinkage=args.family_shrinkage,
-        level_keys=args.level_keys,
     )
 
     def build(state=None):
         from autocracy.timeseries import ActionRecord, diverse_warmup_plan
 
         agent = TimeSeriesPolicyAgent(
-            _forecaster(model),
+            _forecaster(model, with_bands=conservative),
             country=country,
             config=SimulationConfig(random_seed=seed),
             forecast_horizon=args.horizon,
@@ -173,9 +212,13 @@ def run_chronos_life(
             exploration_countdown=True,
             memory_credit_lag=args.memory_credit_lag,
             score_horizon_mean=args.score_horizon_mean,
-            balance_guard_penalty=args.balance_guard_penalty,
             fiscal_prudence_weight=args.fiscal_prudence_weight,
             fiscal_prior_weight=args.fiscal_prior_weight,
+            intervention_threshold=args.intervention_threshold,
+            intervention_lambda=args.intervention_lambda,
+            reversal_cooldown=args.reversal_cooldown,
+            action_cost_weight=args.action_cost_weight,
+            gate_warmup_turns=args.gate_warmup_turns,
         )
         if args.warmup_size:
             agent.warmup_plan = [
@@ -406,6 +449,38 @@ def main() -> None:
     parser.add_argument("--seed-base", type=int, default=20260813)
     parser.add_argument("--decay", type=float, default=0.9)
     parser.add_argument(
+        "--conservative",
+        action="store_true",
+        help="Enable the status-quo (no-op) evidence gate preset "
+        "(NEXT_STEPS experiment 1): threshold delta=0.02, uncertainty "
+        "lambda=2.0 on Chronos q20/q80 bands plus memory spread, "
+        "8-transition reversal chill, Chronos bands on.",
+    )
+    parser.add_argument(
+        "--label",
+        default=None,
+        help="Output subdirectory under reports/campaigns/chronos/ "
+        "(defaults to 'conservative' with --conservative, else no label).",
+    )
+    parser.add_argument(
+        "--intervention-threshold",
+        type=float,
+        default=None,
+        help="Override the gate margin delta.",
+    )
+    parser.add_argument(
+        "--intervention-lambda",
+        type=float,
+        default=None,
+        help="Override the uncertainty weight lambda.",
+    )
+    parser.add_argument(
+        "--reversal-cooldown",
+        type=int,
+        default=None,
+        help="Override the post-intervention chill window (transitions).",
+    )
+    parser.add_argument(
         "--level-keys",
         action="store_true",
         help="Credit memory samples to the resulting slider level instead "
@@ -431,16 +506,29 @@ def main() -> None:
         return
     if args.seeds is None:
         args.seeds = 1 if args.mode in ("oracle", "noop") else 10
+    if args.label is None:
+        args.label = "conservative" if args.conservative else ""
 
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     summaries = []
     for index in range(args.seeds):
         seed = args.seed_base + index
-        out_dir = OUT_ROOT / args.mode / args.country / str(seed)
+        if args.label:
+            out_dir = OUT_ROOT / args.mode / args.label / args.country / str(seed)
+        else:
+            out_dir = OUT_ROOT / args.mode / args.country / str(seed)
         out_dir.mkdir(parents=True, exist_ok=True)
         if args.mode == "chronos":
+            if args.intervention_threshold is not None:
+                args.intervention_threshold = float(args.intervention_threshold)
             summary = run_chronos_life(
-                args.country, args.model, seed, args.elections, out_dir, args=args
+                args.country,
+                args.model,
+                seed,
+                args.elections,
+                out_dir,
+                args=args,
+                conservative=args.conservative,
             )
         elif args.mode == "oracle":
             summary = run_oracle_life(args.country, seed, args.elections, out_dir)
@@ -450,7 +538,8 @@ def main() -> None:
         if not args.skip_replay:
             ok, checked = replay_verify(seed, out_dir, args.elections, args.mode)
         line = (
-            f"{args.mode} {args.country} seed {seed}: {len(summary['margins'])} elections, "
+            f"{args.mode}{'/' + args.label if args.label else ''} {args.country} seed {seed}: "
+            f"{len(summary['margins'])} elections, "
             f"margin {summary['margins'] if summary['margins'] else '[]'}, "
             f"mean_poll {summary['mean_poll']:.3f} "
             f"({summary['wall_clock_seconds']:.0f}s)"
