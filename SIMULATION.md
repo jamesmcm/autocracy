@@ -453,6 +453,44 @@ Chronos agent learns a treatment-effect memory purely from its own observed
 transitions and wins its first election without any scripted moves or oracle
 look-ahead.
 
+The optional `autocracy.uncertainty.UncertaintyConfig` adds the first experiment
+from `UNCERTAINTY.md` to `TimeSeriesPolicyAgent`. With positive `beta`, Chronos
+predicts the same candidate set on chronological context suffixes (default
+full/75%/50%). Each member's action score is compared with that same member's
+no-op score before computing mean and population standard deviation. Acquisition
+is mean treatment-effect evidence plus `beta * std`, retaining the existing
+memory exploration and reversal terms. The evidence includes the configured
+objective, debt penalty, and memory/fiscal/capital-cost terms. No simulator
+look-ahead enters the ensemble. This disagreement is a proxy for uncertainty,
+not a Bayesian posterior; observations enter the next decision's context as usual.
+
+`Chronos2SmallForecaster(full_quantiles=True)` requests the pipeline's native
+quantiles (21 for the current Chronos-2 models) and preserves every per-step,
+per-target value in `StateForecast.quantiles`. Known policy paths remain
+deterministic at every quantile. With nonzero `risk_weight`, the agent measures
+the worst per-step poll shortfall below `risk_floor` using `risk_quantile`
+(0.05 or 0.1), then penalizes only the excess over no-op's shortfall. The risk
+calculation uses the full-context forecast, never interprets marginal quantiles
+as coherent stochastic trajectories, and errors if required poll quantiles are
+missing. `risk_floor` defaults to 0.5 and `risk_weight` to zero.
+
+When beta and risk weight are both zero the original greedy scoring and single
+batch remain intact. A positive beta also switches to ensemble-mean evidence;
+the comparison with beta zero therefore includes that central-estimate change.
+Context members run sequentially with bounded batch memory, and duplicate
+window lengths are omitted for short histories. No additional sampling changes
+the agent's seeded candidate stream. The conservative no-op gate is incompatible
+with active uncertainty acquisition.
+
+Use `experiments/campaign_trace.py --mode chronos --country germany --seeds 3
+--uncertainty-beta 0.5 --risk-weight 0.25 --label uncertainty-b05-r025` (prefixed
+with `uv run --extra chronos python`) for sequential country runs. The runner
+defaults to the full `autogluon/chronos-2` checkpoint; `--uncertainty-members`,
+`--uncertainty-min-context`, `--risk-quantile`, and `--risk-floor` configure the
+experiment. `--full-quantiles` requests quantiles for beta-zero controls too.
+Summaries store the effective run config, and per-turn logs store candidate
+acquisition components and the selected candidate for later comparisons.
+
 Simulation snapshots can be persisted for later comparison with Democracy 3 by using:
 
 | Function | Description |

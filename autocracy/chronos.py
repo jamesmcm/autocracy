@@ -24,6 +24,7 @@ from .timeseries import (
 
 DEFAULT_CHRONOS2_SMALL_MODEL = "autogluon/chronos-2-small"
 DEFAULT_QUANTILE_LEVEL = 0.5
+NATIVE_QUANTILES: tuple[float, ...] = (0.01, *(i / 20 for i in range(1, 20)), 0.99)
 # Quantile levels used for the uncertainty bands the no-op evidence gate
 # consumes.  The pair brackets the 60% central interval.
 BAND_QUANTILES: tuple[float, float] = (0.2, 0.8)
@@ -149,6 +150,7 @@ class Chronos2SmallForecaster:
     # When True, predict at BAND_QUANTILES as well and attach lower/upper
     # bands to every returned StateForecast (uncertainty-aware gating).
     with_bands: bool = False
+    full_quantiles: bool = False
     batch_size: int = 256
     max_context_rows: int | None = None
     pipeline_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -156,8 +158,8 @@ class Chronos2SmallForecaster:
     _pipeline: Any | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.quantile_level):
-            raise ValueError("quantile_level must be finite")
+        if not math.isfinite(self.quantile_level) or not 0 < self.quantile_level < 1:
+            raise ValueError("quantile_level must lie in (0, 1)")
 
     def _ensure_pipeline(self) -> Any:
         if self._pipeline is None:
@@ -197,6 +199,10 @@ class Chronos2SmallForecaster:
         quantile_levels = [self.quantile_level]
         if self.with_bands:
             quantile_levels.extend(q for q in BAND_QUANTILES if q != self.quantile_level)
+        if self.full_quantiles:
+            quantile_levels = sorted(set(quantile_levels).union(
+                getattr(pipeline, "quantiles", NATIVE_QUANTILES), (0.05, 0.1)
+            ))
         prediction_frame = pipeline.predict_df(
             context_frame,
             future_df=future_frame,
@@ -207,12 +213,14 @@ class Chronos2SmallForecaster:
             target=list(target_names),
             freq="D",
             batch_size=self.batch_size,
+            cross_learning=False,
         )
         return _forecasts_from_prediction_frame(
             inputs,
             prediction_frame,
             target_names,
             band_quantiles=BAND_QUANTILES if self.with_bands else None,
+            quantile_levels=quantile_levels if self.full_quantiles else (),
         )
 
 
@@ -221,6 +229,7 @@ def _forecasts_from_prediction_frame(
     prediction_frame: Any,
     target_names: Sequence[str],
     band_quantiles: tuple[float, float] | None = None,
+    quantile_levels: Sequence[float] = (),
 ) -> list[StateForecast]:
     """Map the long prediction frame back into per-candidate forecasts.
 
@@ -241,6 +250,10 @@ def _forecasts_from_prediction_frame(
     grouped: dict[str, dict[tuple[str, int], float]] = {}
     banded: dict[str, dict[tuple[str, int, str], float]] = {}
     band_columns: dict[float, str] = {}
+    missing = [q for q in quantile_levels if str(q) not in prediction_frame.columns]
+    if missing:
+        raise RuntimeError(f"chronos prediction frame lacks requested quantiles: {missing}")
+    quantiled: dict[str, dict[tuple[str, int, float], float]] = {}
     if band_quantiles is not None:
         for quantile in band_quantiles:
             column = str(quantile)
@@ -250,7 +263,10 @@ def _forecasts_from_prediction_frame(
     for row in prediction_frame.to_dict("records"):
         key = (str(row["target_name"]), step_index[row["timestamp"]])
         item = str(row["item_id"])
+        # Keep the legacy point estimate when adding marginal quantiles.
         grouped.setdefault(item, {})[key] = float(row["predictions"])
+        for level in quantile_levels:
+            quantiled.setdefault(item, {})[key + (level,)] = float(row[str(level)])
         if use_bands:
             for quantile, column in band_columns.items():
                 side = "lower" if quantile == min(band_columns) else "upper"
@@ -267,6 +283,7 @@ def _forecasts_from_prediction_frame(
         rows: list[dict[str, float]] = []
         lower_rows: list[dict[str, float]] = []
         upper_rows: list[dict[str, float]] = []
+        quantile_rows: dict[float, list[dict[str, float]]] = {q: [] for q in quantile_levels}
         for step in range(model_input.horizon):
             row = {
                 name: item_grouped[(name, step)]
@@ -278,6 +295,11 @@ def _forecasts_from_prediction_frame(
             for name, value in known_paths[step].items():
                 row.setdefault(name, value)
             rows.append(row)
+            for level in quantile_levels:
+                quantile_rows[level].append({
+                    **known_paths[step],
+                    **{name: quantiled[item_id][(name, step, level)] for name in target_names},
+                })
             if use_bands:
                 item_banded = banded.get(item_id, {})
                 lower_rows.append(
@@ -299,6 +321,7 @@ def _forecasts_from_prediction_frame(
                 model_name="chronos-2-small",
                 lower=tuple(lower_rows) if use_bands else None,
                 upper=tuple(upper_rows) if use_bands else None,
+                quantiles=quantile_rows,
             )
         )
     return forecasts
@@ -308,6 +331,7 @@ __all__ = [
     "BAND_QUANTILES",
     "Chronos2SmallForecaster",
     "DEFAULT_CHRONOS2_SMALL_MODEL",
+    "NATIVE_QUANTILES",
     "chronos_frames",
     "projected_policy_paths",
 ]

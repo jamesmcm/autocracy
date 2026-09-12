@@ -35,6 +35,12 @@ from .models import (
     SimulationState,
 )
 from . import simulator
+from .uncertainty import (
+    UncertaintyConfig,
+    context_windows,
+    delta_moments,
+    marginal_poll_shortfall,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checkers
     from .learning import TreatmentEffectMemory
@@ -656,6 +662,8 @@ class StateForecast:
     # band as zero uncertainty.
     lower: tuple[Mapping[str, float], ...] | None = None
     upper: tuple[Mapping[str, float], ...] | None = None
+    # Marginal quantiles per step; these are not joint reward trajectories.
+    quantiles: Mapping[float, tuple[Mapping[str, float], ...]] = field(default_factory=dict)
 
     @classmethod
     def from_rows(
@@ -666,6 +674,7 @@ class StateForecast:
         model_name: str = "",
         lower: tuple[Mapping[str, float], ...] | None = None,
         upper: tuple[Mapping[str, float], ...] | None = None,
+        quantiles: Mapping[float, Sequence[Mapping[str, float]]] | None = None,
     ) -> "StateForecast":
         if not rows:
             raise ValueError("a forecaster must return at least one future row")
@@ -676,6 +685,16 @@ class StateForecast:
             }
             for row in rows
         )
+        quantile_rows: dict[float, tuple[Mapping[str, float], ...]] = {}
+        for level, path in (quantiles or {}).items():
+            if not math.isfinite(level) or not 0.0 < level < 1.0:
+                raise ValueError("forecast quantile levels must lie in (0, 1)")
+            if len(path) != len(values):
+                raise ValueError("forecast quantiles must match the point horizon")
+            quantile_rows[level] = tuple(
+                {name: _finite(value, name=name) for name, value in row.items()}
+                for row in path
+            )
         return cls(
             feature_names=model_input.feature_names,
             values=values,
@@ -684,6 +703,7 @@ class StateForecast:
             model_name=model_name,
             lower=lower,
             upper=upper,
+            quantiles=quantile_rows,
         )
 
     @property
@@ -718,6 +738,10 @@ class StateForecast:
         return {
             "feature_names": list(self.feature_names),
             "values": [dict(row) for row in self.values],
+            "quantiles": {
+                str(level): [dict(row) for row in path]
+                for level, path in self.quantiles.items()
+            },
             "origin_turn": self.origin_turn,
             "pending_actions": [
                 action.to_dict() for action in self.pending_actions
@@ -939,6 +963,7 @@ class ForecastDecision:
     # (None for warm-up moves or when the gate is disabled).
     evidence_margin: float | None = None
     observed: StateSnapshot | None = None
+    acquisition: Mapping[str, object] | None = None
 
     @property
     def one_step_mae(self) -> float | None:
@@ -955,6 +980,7 @@ class ForecastDecision:
             "turn": self.turn,
             "candidate_count": self.candidate_count,
             "evidence_margin": self.evidence_margin,
+            "acquisition": dict(self.acquisition) if self.acquisition is not None else None,
             "score": self.score,
             "observed": self.observed.to_dict() if self.observed else None,
             "one_step_mae": self.one_step_mae,
@@ -1110,6 +1136,7 @@ class TimeSeriesPolicyAgent(BaseAgent):
         reversal_cooldown: int = 0,
         action_cost_weight: float = 0.0,
         gate_warmup_turns: int = 0,
+        uncertainty: UncertaintyConfig | None = None,
     ) -> None:
         super().__init__(
             country=country,
@@ -1124,6 +1151,10 @@ class TimeSeriesPolicyAgent(BaseAgent):
         if batch_candidate_limit is not None and batch_candidate_limit < 1:
             raise ValueError("batch_candidate_limit must be at least one or None")
         self.forecaster = forecaster
+        self.uncertainty = uncertainty or UncertaintyConfig()
+        if self.uncertainty.active and (intervention_threshold or intervention_lambda):
+            raise ValueError("uncertainty acquisition requires the non-conservative policy")
+        self._last_acquisitions: list[dict[str, object]] = []
         self.visible_features_only = visible_features_only
         self.seed_pre_game_history = seed_pre_game_history
         self.feature_encoder = encoder or self._default_encoder(self.state)
@@ -1607,6 +1638,7 @@ class TimeSeriesPolicyAgent(BaseAgent):
             self.context = self._initial_context()
             self.decisions.clear()
         self._noop_forecast_row = None
+        self._last_acquisitions = []
         candidates = self._candidate_batches(options)
         if self.warmup_plan:
             scheduled = self._pop_legal_warmup_actions(
@@ -1634,11 +1666,11 @@ class TimeSeriesPolicyAgent(BaseAgent):
             self.context.model_input(actions, horizon=self.forecast_horizon)
             for actions in candidates
         ]
-        batch_predict = getattr(self.forecaster, "predict_batch", None)
-        if callable(batch_predict):
-            forecasts = list(batch_predict(model_inputs))
-        else:
-            forecasts = [self.forecaster.predict(item) for item in model_inputs]
+        forecasts = self._predict_candidates(model_inputs)
+        if self.uncertainty.active:
+            self._last_acquisitions = self._uncertainty_acquisitions(
+                model_inputs, forecasts, candidates, state
+            )
         # Remember the no-op counterfactual: the recorder de-trends observed
         # movement against what the world model expected without any action,
         # a sharper baseline than recent-transition medians.
@@ -1675,7 +1707,7 @@ class TimeSeriesPolicyAgent(BaseAgent):
             and (self.intervention_threshold or self.intervention_lambda)
             and state.turn >= self.gate_warmup_turns
         )
-        for actions, forecast in zip(candidates, forecasts):
+        for index, (actions, forecast) in enumerate(zip(candidates, forecasts)):
             if forecast.horizon < self.forecast_horizon:
                 raise ValueError(
                     f"forecaster returned {forecast.horizon} steps, "
@@ -1686,6 +1718,13 @@ class TimeSeriesPolicyAgent(BaseAgent):
             # untried moves can win among gated-in candidates but curiosity
             # can never manufacture evidence for crossing the gate.
             score = evidence
+            if self.uncertainty.active:
+                stats = self._last_acquisitions[index]
+                score = (
+                    float(stats["mean_delta"])
+                    + float(stats["bonus"])
+                    - float(stats["risk_penalty"])
+                )
             if self.treatment_memory is not None and actions:
                 exploration = self.treatment_memory.explore_total(
                     actions,
@@ -1706,6 +1745,8 @@ class TimeSeriesPolicyAgent(BaseAgent):
                     exploration *= min(1.0, remaining / self._initial_term_length)
                 score += exploration
             score = self._reverse_adjusted_score(actions, score, recent)
+            if self.uncertainty.active:
+                self._last_acquisitions[index]["score"] = score
             # Status-quo gate: the evidence — forecast objective plus
             # measured memory effect, net of the action's capital cost —
             # must beat the no-op by δ plus an uncertainty-aware margin
@@ -1763,8 +1804,61 @@ class TimeSeriesPolicyAgent(BaseAgent):
                 if gate_active and noop_score is not None
                 else None
             ),
+            acquisition=(
+                self._last_acquisitions[candidates.index(best_actions)]
+                if self.uncertainty.active else None
+            ),
         )
         return best_actions
+
+    def _predict_candidates(self, inputs: Sequence[ForecastModelInput]) -> list[StateForecast]:
+        batch_predict = getattr(self.forecaster, "predict_batch", None)
+        forecasts = (list(batch_predict(inputs)) if callable(batch_predict)
+                     else [self.forecaster.predict(item) for item in inputs])
+        if len(forecasts) != len(inputs):
+            raise ValueError("forecaster must return one forecast per candidate")
+        if any(forecast.horizon < item.horizon for forecast, item in zip(forecasts, inputs)):
+            raise ValueError("forecaster returned fewer steps than the requested horizon")
+        return forecasts
+
+    def _uncertainty_acquisitions(
+        self,
+        inputs: Sequence[ForecastModelInput],
+        forecasts: Sequence[StateForecast],
+        candidates: Sequence[tuple[PolicyAction, ...]],
+        state: SimulationState,
+    ) -> list[dict[str, object]]:
+        if () not in candidates:
+            raise ValueError("uncertainty acquisition requires a no-op candidate")
+        noop = candidates.index(())
+        windows = context_windows(inputs, self.uncertainty)
+        scores = [[self._composite_evidence(actions, forecast, state)]
+                  for actions, forecast in zip(candidates, forecasts)]
+        # One candidate batch at a time per window keeps peak GPU usage at
+        # the legacy batch size. Only scalar member scores are retained.
+        for window in windows[1:]:
+            member = self._predict_candidates(window)
+            for index, (actions, forecast) in enumerate(zip(candidates, member)):
+                scores[index].append(self._composite_evidence(actions, forecast, state))
+        noop_risk = marginal_poll_shortfall(forecasts[noop], self.uncertainty)
+        results: list[dict[str, object]] = []
+        for actions, forecast, candidate_scores in zip(candidates, forecasts, scores):
+            mean, std = delta_moments(candidate_scores, scores[noop])
+            risk = marginal_poll_shortfall(forecast, self.uncertainty)
+            excess_risk = max(0.0, risk - noop_risk)
+            results.append({
+                "actions": [record.to_dict() for record in _records(actions)],
+                "central_delta": candidate_scores[0] - scores[noop][0],
+                "mean_delta": mean,
+                "epistemic_std": std,
+                "bonus": self.uncertainty.beta * std,
+                "risk": risk,
+                "noop_risk": noop_risk,
+                "excess_risk": excess_risk,
+                "risk_penalty": self.uncertainty.risk_weight * excess_risk,
+                "context_rows": [len(window[0].history) for window in windows],
+            })
+        return results
 
     def step(self) -> SimulationState:
         before = self.state

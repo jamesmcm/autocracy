@@ -389,6 +389,52 @@ over-intervention only where no-op was already strong.
 See [`TIMESERIES.md`](TIMESERIES.md) for the full input contract, trace
 schema, Chronos2 integration boundary, and evaluation recommendations.
 
+### Context-disagreement exploration (UNCERTAINTY experiment 1)
+
+`TimeSeriesPolicyAgent(..., uncertainty=UncertaintyConfig(beta=0.5,
+risk_weight=0.25))` enables the first experiment in `UNCERTAINTY.md`.
+Import `UncertaintyConfig` from `autocracy.uncertainty` and use
+`Chronos2SmallForecaster(model_name="autogluon/chronos-2", full_quantiles=True)`.
+The campaign runner handles these settings through CLI flags:
+
+```bash
+# Seeds run sequentially within each invocation. Run these commands in order.
+uv run --extra chronos python experiments/campaign_trace.py --mode chronos \
+  --country usa --seeds 3 --seed-base 20260813 --elections 20 \
+  --uncertainty-beta 0.5 --uncertainty-members 3 --risk-weight 0.25 \
+  --risk-quantile 0.05 --label uncertainty-b05-r025
+uv run --extra chronos python experiments/campaign_trace.py --mode chronos \
+  --country germany --seeds 3 --seed-base 20260813 --elections 20 \
+  --uncertainty-beta 0.5 --uncertainty-members 3 --risk-weight 0.25 \
+  --risk-quantile 0.05 --label uncertainty-b05-r025
+```
+
+Each decision uses the same candidate set with full, 75%, and 50% suffixes
+of observed context by default. Members run sequentially, with candidates
+batched within each member. Selection uses the mean candidate-minus-no-op
+objective across members plus `beta` times its population standard deviation.
+Existing measured memory effects, fiscal terms, memory exploration, and reversal
+penalties remain in the score. This is a UCB-style context sensitivity heuristic,
+not a fitted Bayesian posterior.
+
+The optional risk term subtracts `risk_weight` times the excess, relative to
+no-op, of the worst per-step q05/q10 poll shortfall below `risk_floor` (default
+0.5). It is a marginal stress indicator, not a quantile of cumulative reward
+or an election-loss probability. All native Chronos quantiles are retained in
+`StateForecast.quantiles`; missing requested quantiles raise an explicit error.
+
+Both beta and risk weight default to zero, preserving the existing greedy
+selection and one prediction batch. For matched controls use
+`--uncertainty-beta 0 --risk-weight 0 --full-quantiles --label uncertainty-b0-r0`.
+Positive beta uses the ensemble mean, so a sweep also changes the central
+estimate compared with this legacy single-context control. Keep risk weight
+fixed across a beta sweep to avoid confounding exploration with risk aversion.
+`--uncertainty-min-context` sets the shortest context fraction; short histories
+deduplicate identical windows. `--conservative` cannot be combined with active
+uncertainty acquisition. Each campaign summary records the effective config,
+and turn records include candidate and selected acquisition components for
+analysis. Use distinct labels for distinct parameter sets.
+
 ### Current parity limits
 
 - The one-pass core now agrees closely with the shipped UK no-op transition,

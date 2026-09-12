@@ -5,6 +5,7 @@ import pytest
 from autocracy import simulator
 from autocracy.chronos import (
     Chronos2SmallForecaster,
+    NATIVE_QUANTILES,
     _forecasts_from_prediction_frame,
     chronos_frames,
     projected_policy_paths,
@@ -311,3 +312,42 @@ def test_forecast_mapping_attaches_quantile_bands():
     plain = _forecasts_from_prediction_frame([model_input], frame, ["value/GDP"])
     assert plain[0].lower is None
     assert plain[0].band_step("value/GDP") == 0.0
+
+
+def test_full_quantiles_are_requested_retained_and_treatments_stay_deterministic():
+    state, _ = simulator.get_initial_state("uk")
+    context = AutoregressiveContext.from_state(state, encoder=_visible_encoder(state))
+    item = context.model_input([PolicyAction("IncomeTax", 0.05, "raise")], horizon=2)
+
+    class QuantilePipeline(_FakePipeline):
+        quantiles = list(NATIVE_QUANTILES)
+
+        def predict_df(self, frame, **kwargs):
+            assert kwargs["quantile_levels"] == list(NATIVE_QUANTILES)
+            assert kwargs["cross_learning"] is False
+            result = super().predict_df(frame, **kwargs)
+            for q in kwargs["quantile_levels"]:
+                result[str(q)] = result["predictions"] + q - 0.5
+            return result.iloc[::-1]
+
+    forecaster = Chronos2SmallForecaster(full_quantiles=True)
+    forecaster._pipeline = QuantilePipeline(item)
+    forecast = forecaster.predict(item)
+    assert len(forecast.quantiles) == 21
+    assert forecast.quantiles[0.05][0][ELECTORAL_SUPPORT_FEATURE] == pytest.approx(
+        forecast.first[ELECTORAL_SUPPORT_FEATURE] - 0.45
+    )
+    for path in forecast.quantiles.values():
+        assert len(path) == 2
+        for step, row in enumerate(path):
+            assert row["policy/IncomeTax"] == forecast.values[step]["policy/IncomeTax"]
+    assert "0.05" in forecast.to_dict()["quantiles"]
+
+
+def test_full_quantiles_fail_explicitly_if_backend_omits_them():
+    state, _ = simulator.get_initial_state("uk")
+    item = AutoregressiveContext.from_state(state).model_input((), horizon=1)
+    forecaster = Chronos2SmallForecaster(full_quantiles=True)
+    forecaster._pipeline = _FakePipeline(item)
+    with pytest.raises(RuntimeError, match="lacks requested quantiles"):
+        forecaster.predict(item)

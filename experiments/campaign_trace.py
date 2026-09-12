@@ -43,6 +43,7 @@ from autocracy import simulator
 from autocracy.models import PolicyAction, SimulationConfig
 from autocracy.oracle import OracleElectionLoss
 from autocracy.timeseries import TimeSeriesPolicyAgent
+from autocracy.uncertainty import UncertaintyConfig
 
 OUT_ROOT = Path("reports/campaigns")
 
@@ -77,6 +78,13 @@ def _args_for_chronos(model: str, seed: int) -> argparse.Namespace:
     args.reversal_cooldown = 0
     args.action_cost_weight = 0.0
     args.gate_warmup_turns = 0
+    args.uncertainty_beta = 0.0
+    args.uncertainty_members = 3
+    args.uncertainty_min_context = 0.5
+    args.risk_weight = 0.0
+    args.risk_quantile = 0.05
+    args.risk_floor = 0.5
+    args.full_quantiles = False
     return args
 
 
@@ -137,18 +145,22 @@ def _record_turn(
     record["expenditure_end"] = float(agent.state.total_expenditure)
     record["poll_start"] = float(start_dict["poll_rate"])
     record["poll_end"] = float(agent.state.poll_rate)
+    acquisitions = getattr(agent, "_last_acquisitions", [])
+    if acquisitions:
+        record["candidate_acquisitions"] = acquisitions
+        record["selected_acquisition"] = agent.last_decision.acquisition
 
 
-_FORECASTER_CACHE: dict[tuple[str, bool], object] = {}
+_FORECASTER_CACHE: dict[tuple[str, bool, bool], object] = {}
 
 
-def _forecaster(model: str, with_bands: bool = False):
-    key = (model, with_bands)
+def _forecaster(model: str, with_bands: bool = False, full_quantiles: bool = False):
+    key = (model, with_bands, full_quantiles)
     if key not in _FORECASTER_CACHE:
         from autocracy.chronos import Chronos2SmallForecaster
 
         _FORECASTER_CACHE[key] = Chronos2SmallForecaster(
-            model_name=model, with_bands=with_bands
+            model_name=model, with_bands=with_bands, full_quantiles=full_quantiles
         )
     return _FORECASTER_CACHE[key]
 
@@ -176,9 +188,23 @@ def run_chronos_life(
             _args_for_conservative_chronos if conservative else _args_for_chronos
         )
         merged = builder(model, seed)
-        merged.decay = args.decay
-        merged.level_keys = args.level_keys
+        for name in vars(merged):
+            value = getattr(args, name, None)
+            if value is not None:
+                setattr(merged, name, value)
         args = merged
+
+    uncertainty = UncertaintyConfig(
+        beta=args.uncertainty_beta,
+        members=args.uncertainty_members,
+        min_context_fraction=args.uncertainty_min_context,
+        risk_weight=args.risk_weight,
+        risk_quantile=args.risk_quantile,
+        risk_floor=args.risk_floor,
+    )
+    if uncertainty.active and (args.intervention_threshold or args.intervention_lambda):
+        raise ValueError("uncertainty acquisition cannot be combined with the conservative gate")
+    full_quantiles = args.full_quantiles or uncertainty.active
 
     memory = TreatmentEffectMemory(
         decay=args.decay,
@@ -191,7 +217,7 @@ def run_chronos_life(
         from autocracy.timeseries import ActionRecord, diverse_warmup_plan
 
         agent = TimeSeriesPolicyAgent(
-            _forecaster(model, with_bands=conservative),
+            _forecaster(model, with_bands=conservative, full_quantiles=full_quantiles),
             country=country,
             config=SimulationConfig(random_seed=seed),
             forecast_horizon=args.horizon,
@@ -219,6 +245,7 @@ def run_chronos_life(
             reversal_cooldown=args.reversal_cooldown,
             action_cost_weight=args.action_cost_weight,
             gate_warmup_turns=args.gate_warmup_turns,
+            uncertainty=uncertainty,
         )
         if args.warmup_size:
             agent.warmup_plan = [
@@ -229,19 +256,28 @@ def run_chronos_life(
             ]
         return agent
 
-    return _drive(seed, elections, build, out_dir, kind="chronos", data_for=agent_data)
+    return _drive(
+        seed, elections, build, out_dir, kind="chronos", data_for=agent_data,
+        run_config={
+            **vars(args), "country": country, "model": model, "seed": seed,
+            "elections": elections, "full_quantiles": full_quantiles,
+            "uncertainty": uncertainty.to_dict(),
+        },
+    )
 
 
 def agent_data(agent):
     return getattr(agent, "data", None)
 
 
-def _drive(seed, elections, build, out_dir, kind, data_for):
+def _drive(seed, elections, build, out_dir, kind, data_for, run_config=None):
     agent = build()
     data = data_for(agent) or simulator.load_simulation_data()
     turns_path = out_dir / "turns.jsonl.gz"
     with gzip.GzipFile(str(turns_path), "wb", compresslevel=1) as handle:
         summary = {"seed": seed, "kind": kind, "margins": [], "term_mean_polls": [], "term_crisis": []}
+        if run_config is not None:
+            summary["config"] = run_config
         polls = []
         term_polls = []
         previous_term = agent.state.election_current_term
@@ -448,6 +484,17 @@ def main() -> None:
     parser.add_argument("--elections", type=int, default=20)
     parser.add_argument("--seed-base", type=int, default=20260813)
     parser.add_argument("--decay", type=float, default=0.9)
+    parser.add_argument("--uncertainty-beta", type=float, default=0.0,
+                        help="UCB weight on paired context-window treatment-effect disagreement.")
+    parser.add_argument("--uncertainty-members", type=int, default=3)
+    parser.add_argument("--uncertainty-min-context", type=float, default=0.5,
+                        help="Shortest context as a fraction of observed history.")
+    parser.add_argument("--risk-weight", type=float, default=0.0,
+                        help="Penalty on excess marginal poll-tail shortfall versus no-op.")
+    parser.add_argument("--risk-quantile", type=float, choices=(0.05, 0.1), default=0.05)
+    parser.add_argument("--risk-floor", type=float, default=0.5)
+    parser.add_argument("--full-quantiles", action="store_true",
+                        help="Request native Chronos quantiles even for beta=0 controls.")
     parser.add_argument(
         "--conservative",
         action="store_true",
@@ -460,7 +507,8 @@ def main() -> None:
         "--label",
         default=None,
         help="Output subdirectory under reports/campaigns/chronos/ "
-        "(defaults to 'conservative' with --conservative, else no label).",
+        "(defaults to a beta/risk label for uncertainty runs, "
+        "'conservative' with --conservative, else no label).",
     )
     parser.add_argument(
         "--intervention-threshold",
@@ -495,6 +543,19 @@ def main() -> None:
         "via faithful replay of the recorded actions.",
     )
     args = parser.parse_args()
+    try:
+        uncertainty = UncertaintyConfig(
+            beta=args.uncertainty_beta, members=args.uncertainty_members,
+            min_context_fraction=args.uncertainty_min_context,
+            risk_weight=args.risk_weight, risk_quantile=args.risk_quantile,
+            risk_floor=args.risk_floor,
+        )
+    except ValueError as error:
+        parser.error(str(error))
+    if uncertainty.active and args.conservative:
+        parser.error("uncertainty acquisition requires the non-conservative preset")
+    if (uncertainty.active or args.full_quantiles) and args.mode != "chronos":
+        parser.error("uncertainty and quantile flags require --mode chronos")
 
     if args.repair:
         root = OUT_ROOT / args.mode / args.country
@@ -507,7 +568,10 @@ def main() -> None:
     if args.seeds is None:
         args.seeds = 1 if args.mode in ("oracle", "noop") else 10
     if args.label is None:
-        args.label = "conservative" if args.conservative else ""
+        args.label = (
+            f"ucb-b{args.uncertainty_beta:g}-r{args.risk_weight:g}"
+            if uncertainty.active else ("conservative" if args.conservative else "")
+        )
 
     OUT_ROOT.mkdir(parents=True, exist_ok=True)
     summaries = []
